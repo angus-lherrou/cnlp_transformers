@@ -1,4 +1,4 @@
-from transformers.models.auto import  AutoModel
+from transformers.models.auto import AutoModel
 from transformers.modeling_utils import PreTrainedModel
 
 import torch
@@ -11,34 +11,49 @@ import math
 
 logger = logging.getLogger(__name__)
 
+
 class ClassificationHead(nn.Module):
     def __init__(self, config, num_labels, hidden_size=-1):
         super().__init__()
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        self.out_proj = nn.Linear(config.hidden_size if hidden_size < 0 else hidden_size, num_labels)
+        self.out_proj = nn.Linear(
+            config.hidden_size if hidden_size < 0 else hidden_size, num_labels
+        )
 
     def forward(self, features, *kwargs):
         x = self.dropout(features)
         x = self.out_proj(x)
         return x
 
+
 class RepresentationProjectionLayer(nn.Module):
-    def __init__(self, config, layer=10, tokens=False, tagger=False, relations=False, num_attention_heads=-1, head_size=64):
+    def __init__(
+        self,
+        config,
+        layer=10,
+        tokens=False,
+        tagger=False,
+        relations=False,
+        num_attention_heads=-1,
+        head_size=64,
+    ):
         super().__init__()
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         if relations:
             self.dense = nn.Identity()
         else:
             self.dense = nn.Linear(config.hidden_size, config.hidden_size)
-            
+
         self.layer_to_use = layer
         self.tokens = tokens
         self.tagger = tagger
         self.relations = relations
         self.hidden_size = config.hidden_size
-        
+
         if num_attention_heads <= 0 and relations:
-            raise Exception("Inconsistent configuration: num_attention_heads must be > 0 for relations")
+            raise Exception(
+                "Inconsistent configuration: num_attention_heads must be > 0 for relations"
+            )
 
         if relations:
             self.num_attention_heads = num_attention_heads
@@ -49,10 +64,15 @@ class RepresentationProjectionLayer(nn.Module):
             self.key = nn.Linear(config.hidden_size, self.all_head_size)
 
         if tokens and (tagger or relations):
-            raise Exception('Inconsistent configuration: tokens cannot be true in tagger or relation mode')
+            raise Exception(
+                "Inconsistent configuration: tokens cannot be true in tagger or relation mode"
+            )
 
     def transpose_for_scores(self, x):
-        new_x_shape = x.size()[:-1] + (self.num_attention_heads, self.attention_head_size)
+        new_x_shape = x.size()[:-1] + (
+            self.num_attention_heads,
+            self.attention_head_size,
+        )
         x = x.view(*new_x_shape)
         return x.permute(0, 2, 1, 3)
 
@@ -63,17 +83,25 @@ class RepresentationProjectionLayer(nn.Module):
             # probably involved passing in some sub-sequence of interest so we know what tokens to grab,
             # then we average across those tokens.
             token_lens = event_tokens.sum(1)
-            expanded_tokens = event_tokens.unsqueeze(2).expand(features[0].shape[0], seq_length, self.hidden_size)
+            expanded_tokens = event_tokens.unsqueeze(2).expand(
+                features[0].shape[0], seq_length, self.hidden_size
+            )
             filtered_features = features[self.layer_to_use] * expanded_tokens
-            x = filtered_features.sum(1) / token_lens.unsqueeze(1).expand(features[0].shape[0], self.hidden_size)
+            x = filtered_features.sum(1) / token_lens.unsqueeze(1).expand(
+                features[0].shape[0], self.hidden_size
+            )
         elif self.tagger:
             x = features[self.layer_to_use]
         elif self.relations:
             # something like multi-headed attention but without the weighted sum at the end, so i get (num_heads) features for each of N x N grid, which feads into NxN softmax (with the same parameters)
             hidden_states = features[self.layer_to_use]
-            key_layer = self.transpose_for_scores(self.key(hidden_states))   # Batch X num_heads X seq len X head_size
+            key_layer = self.transpose_for_scores(
+                self.key(hidden_states)
+            )  # Batch X num_heads X seq len X head_size
             query_layer = self.transpose_for_scores(self.query(hidden_states))
-            attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2)) # Batch X num_heads X seq_len X seq_len
+            attention_scores = torch.matmul(
+                query_layer, key_layer.transpose(-1, -2)
+            )  # Batch X num_heads X seq_len X seq_len
             # Now we have num_heads features for each N X N relations.
             x = attention_scores / math.sqrt(self.attention_head_size)
             # move the 12 dimension to the end for easier classification
@@ -89,44 +117,55 @@ class RepresentationProjectionLayer(nn.Module):
         return x
 
 
-
 class CnlpModelForClassification(PreTrainedModel):
-
-    def __init__(self,
-                model_path,
-                cache_dir,
-                config,
-                num_labels_list=[],
-                tagger=[False],
-                relations=[False],
-                class_weights=None,
-                final_task_weight=1.0,
-                use_prior_tasks=False,
-                argument_regularization=-1,
-        ):
+    def __init__(
+        self,
+        model_path,
+        cache_dir,
+        config,
+        num_labels_list=[],
+        tagger=[False],
+        relations=[False],
+        class_weights=None,
+        final_task_weight=1.0,
+        use_prior_tasks=False,
+        argument_regularization=-1,
+    ):
 
         super().__init__(config)
         self.num_labels = num_labels_list
 
         model = AutoModel.from_config(config)
         self.encoder = model.from_pretrained(model_path)
-        
+
         if config.freeze:
             for param in self.encoder.parameters():
                 param.requires_grad = False
-        
+
         self.feature_extractors = nn.ModuleList()
         self.logit_projectors = nn.ModuleList()
         self.classifiers = nn.ModuleList()
         total_prev_task_labels = 0
-        for task_ind,task_num_labels in enumerate(num_labels_list):
-            self.feature_extractors.append(RepresentationProjectionLayer(config, layer=config.layer, tokens=config.tokens, tagger=tagger[task_ind], relations=relations[task_ind], num_attention_heads=config.num_rel_attention_heads, head_size=config.rel_attention_head_dims))
+        for task_ind, task_num_labels in enumerate(num_labels_list):
+            self.feature_extractors.append(
+                RepresentationProjectionLayer(
+                    config,
+                    layer=config.layer,
+                    tokens=config.tokens,
+                    tagger=tagger[task_ind],
+                    relations=relations[task_ind],
+                    num_attention_heads=config.num_rel_attention_heads,
+                    head_size=config.rel_attention_head_dims,
+                )
+            )
             if relations[task_ind]:
                 hidden_size = config.num_rel_attention_heads
                 if use_prior_tasks:
                     hidden_size += total_prev_task_labels
 
-                self.classifiers.append(ClassificationHead(config, task_num_labels, hidden_size=hidden_size))
+                self.classifiers.append(
+                    ClassificationHead(config, task_num_labels, hidden_size=hidden_size)
+                )
             else:
                 self.classifiers.append(ClassificationHead(config, task_num_labels))
             total_prev_task_labels += task_num_labels
@@ -157,14 +196,25 @@ class CnlpModelForClassification(PreTrainedModel):
                     # we have batch x len x num_classes.
                     # we want to concatenate the num_classes to the variables at each element of the sequence,
                     # but then need to broadcast it down all the rows of the matrix.
-                    aug = prior_task_logits.unsqueeze(2) # add another dimension to repeat along
-                    aug = aug.repeat(1, 1, seq_len, 1) # repeat along the new empty dimension so we have our seq logits repeated seq_len x seq_len
-                    features = torch.cat( (features, aug), 3) # concatenate the  relation matrix with the sequence matrix
+                    aug = prior_task_logits.unsqueeze(
+                        2
+                    )  # add another dimension to repeat along
+                    aug = aug.repeat(
+                        1, 1, seq_len, 1
+                    )  # repeat along the new empty dimension so we have our seq logits repeated seq_len x seq_len
+                    features = torch.cat(
+                        (features, aug), 3
+                    )  # concatenate the  relation matrix with the sequence matrix
                 else:
-                    logging.warn("It is not implemented to add a task of shape %s to a relation matrix" % ( str(prior_task_logits.shape)))
+                    logging.warn(
+                        "It is not implemented to add a task of shape %s to a relation matrix"
+                        % (str(prior_task_logits.shape))
+                    )
             elif len(features.shape) == 3:
                 # sequence
-                logging.warn("It is not implemented to add previous task of any type to a sequence task")
+                logging.warn(
+                    "It is not implemented to add previous task of any type to a sequence task"
+                )
 
         return features
 
@@ -198,22 +248,26 @@ class CnlpModelForClassification(PreTrainedModel):
             inputs_embeds=inputs_embeds,
             output_attentions=output_attentions,
             output_hidden_states=True,
-            return_dict=True
+            return_dict=True,
         )
-        
-        batch_size,seq_len = input_ids.shape
+
+        batch_size, seq_len = input_ids.shape
 
         logits = []
 
         loss = None
         task_label_ind = 0
 
-        for task_ind,task_num_labels in enumerate(self.num_labels):
-            features = self.feature_extractors[task_ind](outputs.hidden_states, event_tokens)
+        for task_ind, task_num_labels in enumerate(self.num_labels):
+            features = self.feature_extractors[task_ind](
+                outputs.hidden_states, event_tokens
+            )
             if self.use_prior_tasks:
                 # note: this specific way of incorporating previous logits doesn't help in my experiments with thyme/clinical tempeval
                 if self.relations[task_ind]:
-                    features = self.predict_relations_with_previous_logits(features, logits)
+                    features = self.predict_relations_with_previous_logits(
+                        features, logits
+                    )
             task_logits = self.classifiers[task_ind](features)
             logits.append(task_logits)
 
@@ -225,65 +279,93 @@ class CnlpModelForClassification(PreTrainedModel):
                     task_loss = loss_fct(task_logits.view(-1), labels.view(-1))
                 else:
                     if not self.class_weights[task_ind] is None:
-                        class_weights = torch.FloatTensor(self.class_weights[task_ind]).to(self.device)
+                        class_weights = torch.FloatTensor(
+                            self.class_weights[task_ind]
+                        ).to(self.device)
                     else:
                         class_weights = None
                     loss_fct = CrossEntropyLoss(weight=class_weights)
-                    
+
                     if self.relations[task_ind]:
-                        task_labels = labels[:,0,task_label_ind:task_label_ind+seq_len, :]
+                        task_labels = labels[
+                            :, 0, task_label_ind : task_label_ind + seq_len, :
+                        ]
                         task_label_ind += seq_len
-                        task_loss = loss_fct(task_logits.permute(0, 3, 1, 2), task_labels.type(torch.LongTensor).to(labels.device))
+                        task_loss = loss_fct(
+                            task_logits.permute(0, 3, 1, 2),
+                            task_labels.type(torch.LongTensor).to(labels.device),
+                        )
                     elif self.tagger[task_ind]:
                         # in cases where we are only given a single task the HF code will have one fewer dimension in the labels, so just add a dummy dimension to make our indexing work:
                         if labels.ndim == 3:
                             labels = labels.unsqueeze(1)
-                        task_labels = labels[:,0, task_label_ind,:]
+                        task_labels = labels[:, 0, task_label_ind, :]
                         task_label_ind += 1
-                        task_loss = loss_fct(task_logits.view(-1, task_num_labels), task_labels.reshape([batch_size*seq_len,]).type(torch.LongTensor).to(labels.device))
+                        task_loss = loss_fct(
+                            task_logits.view(-1, task_num_labels),
+                            task_labels.reshape(
+                                [
+                                    batch_size * seq_len,
+                                ]
+                            )
+                            .type(torch.LongTensor)
+                            .to(labels.device),
+                        )
                     else:
                         if labels.ndim == 2:
-                            task_labels = labels[:,0]
+                            task_labels = labels[:, 0]
                         elif labels.ndim == 3:
-                            task_labels = labels[:,0,task_ind]
+                            task_labels = labels[:, 0, task_ind]
                         else:
-                            raise NotImplementedError('Have not implemented the case where a classification task is part of an MTL setup with relations and sequence tagging')
-                        
-                        task_label_ind += 1
-                        task_loss = loss_fct(task_logits, task_labels.type(torch.LongTensor).to(labels.device))
+                            raise NotImplementedError(
+                                "Have not implemented the case where a classification task is part of an MTL setup with relations and sequence tagging"
+                            )
 
+                        task_label_ind += 1
+                        task_loss = loss_fct(
+                            task_logits,
+                            task_labels.type(torch.LongTensor).to(labels.device),
+                        )
 
                 if loss is None:
                     loss = task_loss
                 else:
-                    task_weight = 1.0 if task_ind+1 < len(self.num_labels) else self.final_task_weight
-                    loss += (task_weight * task_loss)
+                    task_weight = (
+                        1.0
+                        if task_ind + 1 < len(self.num_labels)
+                        else self.final_task_weight
+                    )
+                    loss += task_weight * task_loss
 
-        if len(self.num_labels) == 3 and self.relations[-1] and self.argument_regularization > 0:
+        if (
+            len(self.num_labels) == 3
+            and self.relations[-1]
+            and self.argument_regularization > 0
+        ):
             # standard e2e relation task -- two entity extractors and relation extractor.
-            prob_no_rel = softmax(logits[2], dim=3)[:,:,:,0]
-            
+            prob_no_rel = softmax(logits[2], dim=3)[:, :, :, 0]
+
             ## product gets us something like a joint probability over all relation categories.
             # the downside is, we're penalizing the event "some relation being more likely than none"
             # in the joint sense, but we never actually use that event anywhere, i.e., if no
-            # relation meets the threshold we will never create a relation. 
+            # relation meets the threshold we will never create a relation.
             # so maybe doing something like relu + sum makes more sense.
             #
-            #prob_a1_norel = prob_no_rel.prod(dim=1)
-            #prob_a2_norel = prob_no_rel.prod(dim=2)
-            #prob_some_rel = relu ( 1 - (prob_a1_norel * prob_a2_norel) - 0.5)
+            # prob_a1_norel = prob_no_rel.prod(dim=1)
+            # prob_a2_norel = prob_no_rel.prod(dim=2)
+            # prob_some_rel = relu ( 1 - (prob_a1_norel * prob_a2_norel) - 0.5)
             # These values will be greater than 0 at position i if there is any relation that
             # has i as arg1 or i as arg2.
             prob_a1_rel = relu(0.5 - prob_no_rel).sum(dim=1)
             prob_a2_rel = relu(0.5 - prob_no_rel).sum(dim=2)
             prob_some_rel = prob_a1_rel + prob_a2_rel
 
-            #prob_no_e1_type = relu( softmax(logits[0], dim=2)[:,:,0] - 0.5)
-            #prob_no_e2_type = relu( softmax(logits[1], dim=2)[:,:,0] - 0.5)
+            # prob_no_e1_type = relu( softmax(logits[0], dim=2)[:,:,0] - 0.5)
+            # prob_no_e2_type = relu( softmax(logits[1], dim=2)[:,:,0] - 0.5)
             probs_e1 = softmax(logits[0], dim=2)
             probs_e2 = softmax(logits[1], dim=2)
 
-            # threshold: the penalty is possible if more than this number of probabilities are greater than the 
+            # threshold: the penalty is possible if more than this number of probabilities are greater than the
             # "no entity" threshold. we subtract 2 because we are removing the None category, and C-1 is the default
             # case where there is no relation, only if more than that is an issue.
             t1_threshold = self.num_labels[0] - 2
@@ -292,19 +374,31 @@ class CnlpModelForClassification(PreTrainedModel):
             # we take p(none) - p(other relations) inside the sign.
             # then take the sign, if there are any -1s, the sum will be less than tx_threshold and the inner part will be < 0,
             # and relu will be 0. If there are no -1, the sum will be > tx_threshold and the innter part will be 1, relu also 1.
-            prob_no_e1_type = relu(torch.sign(probs_e1[:,:,0].unsqueeze(2) - probs_e1[:,:,1:]).sum(dim=2) - t1_threshold)
-            prob_no_e2_type = relu(torch.sign(probs_e2[:,:,0].unsqueeze(2) - probs_e2[:,:,1:]).sum(dim=2) - t2_threshold)
+            prob_no_e1_type = relu(
+                torch.sign(probs_e1[:, :, 0].unsqueeze(2) - probs_e1[:, :, 1:]).sum(
+                    dim=2
+                )
+                - t1_threshold
+            )
+            prob_no_e2_type = relu(
+                torch.sign(probs_e2[:, :, 0].unsqueeze(2) - probs_e2[:, :, 1:]).sum(
+                    dim=2
+                )
+                - t2_threshold
+            )
 
             prob_no_ent = prob_no_e1_type * prob_no_e2_type
 
             prob_rel_no_ent = prob_some_rel * prob_no_ent * attention_mask
-                   
+
             loss += self.argument_regularization * prob_rel_no_ent.sum()
-            
 
         if self.training:
             return SequenceClassifierOutput(
-                loss=loss, logits=logits, hidden_states=outputs.hidden_states, attentions=outputs.attentions,
+                loss=loss,
+                logits=logits,
+                hidden_states=outputs.hidden_states,
+                attentions=outputs.attentions,
             )
         else:
             return SequenceClassifierOutput(loss=loss, logits=logits)
