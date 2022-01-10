@@ -125,9 +125,9 @@ async def process(doc: EntityDocument):
     start_time = time()
 
     for ent_ind, offsets in enumerate(doc.entities):
-        # logger.debug('Entity ind: %d has offsets (%d, %d)' % (ent_ind, offsets[0], offsets[1]))
+        logger.warn('Entity ind: %d has offsets (%d, %d)' % (ent_ind, offsets[0], offsets[1]))
         inst_str = create_instance_string(doc_text, offsets)
-        logger.debug('Instance string is %s' % (inst_str))
+        logger.warn('Instance string is %s' % (inst_str))
         instances.append(inst_str)
 
     dataset = NegationDocumentDataset.from_instance_list(instances, app.tokenizer)
