@@ -63,6 +63,7 @@ def cnlp_convert_examples_to_features(
     label_list=None,
     output_mode=None,
     token_classify=False,
+    inference=False,
 ):
     event_start_ind = tokenizer.convert_tokens_to_ids('<e>')
     event_end_ind = tokenizer.convert_tokens_to_ids('</e>')
@@ -84,7 +85,8 @@ def cnlp_convert_examples_to_features(
     def label_from_example(example: InputExample) -> Union[int, float, None]:
         if example.label is None:
             # give it a random label, if we didn't specify a label with the data we won't be comparing it.
-            return list(label_map.values())[0]
+            # return list(label_map.values())[0]
+            return None
         if output_mode == classification:
             try:
                 return label_map[example.label]
@@ -123,72 +125,80 @@ def cnlp_convert_examples_to_features(
         assert tokenizer.cls_token == '[CLS]', 'This tokenizer does not seem to be based on BERT or Roberta -- this will cause errors with the dataset encoding.'
 
     # This code has to solve the problem of properly setting labels for word pieces that do not actually need to be tagged.
-    encoded_labels = []
-    if output_mode == tagging:
-        for sent_ind,sent in enumerate(sentences):
-            sent_labels = []
+    if not inference:
+        encoded_labels = []
+        if output_mode == tagging:
+            for sent_ind,sent in enumerate(sentences):
+                sent_labels = []
 
-            ## FIXME -- this is stupid and won't work outside the roberta encoding
-            label_ind = 0
-            for wp_ind,wp in enumerate(batch_encoding[sent_ind].tokens):
-                if ((roberta_based and (wp.startswith('Ġ') or wp in special_tokens)) or 
-                    (not roberta_based and not wp.startswith('[') and (not wp.startswith('##') or wp in special_tokens))):
-                        sent_labels.append(labels[sent_ind].pop(0))
-                else:
-                    sent_labels.append(-100)
-                # if wp_ind in word_inds:
-                #     sent_labels.append(labels[sent_ind][label_ind])
-                #     label_ind += 1
-                # else:
-                #     sent_labels.append(-100)
-            
-            encoded_labels.append(np.array(sent_labels))
-   
-        labels = encoded_labels
-    elif output_mode == relex:
-        # start by building a matrix that's N' x N' (word-piece length) with "None" as the default
-        # for word pairs, and -100 (mask) as the default if one of word pair is a suffix token
-        out_of_bounds = 0
-        num_relations = 0
-        for sent_ind, sent in enumerate(sentences):
-            num_relations += len(labels[sent_ind])
-            wpi_to_tokeni = {}
-            tokeni_to_wpi = {}
-            sent_labels = np.zeros( (max_length, max_length)) - 100
-            wps = batch_encoding[sent_ind].tokens
-            sent_len = len(wps)
-            ## FIXME -- this is stupid and won't work outside the roberta encoding
-            for wp_ind,wp in enumerate(wps):
-                if wp.startswith('Ġ') or wp in special_tokens:
-                    key = wp_ind
-                    val = len(wpi_to_tokeni)
+                ## align word-piece tokens to the tokenization we got as input and only assign labels to input tokens
+                word_ids = batch_encoding.word_ids(batch_index=sent_ind)
+                previous_word_idx = None
+                label_ids = []
+                for word_idx in word_ids:
+                    # Special tokens have a word id that is None. We set the label to -100 so they are automatically
+                    # ignored in the loss function.
+                    if word_idx is None:
+                        label_ids.append(-100)
+                    # We set the label for the first token of each word.
+                    elif word_idx != previous_word_idx:
+                        label_ids.append(labels[sent_ind][word_idx])
+                    # For the other tokens in a word, we set the label to either the current label or -100, depending on
+                    # the label_all_tokens flag.
+                    else:
+                        label_ids.append(-100)
+                    previous_word_idx = word_idx
 
-                    wpi_to_tokeni[key] = val
-                    tokeni_to_wpi[val] = key
-            
-            # make every label beween pairs a 0 to start:
-            for wpi in wpi_to_tokeni.keys():
-                for wpi2 in wpi_to_tokeni.keys():
-                    # leave the diagonals at -100 because you can't have a relation with itself and we
-                    # don't want to consider it because it may screw up the learning to have 2 such similar
-                    # tokens not involved in a relation.
-                    if wpi != wpi2:
-                        sent_labels[wpi,wpi2] = 0.0
+                encoded_labels.append(np.array(label_ids))
+    
+            labels = encoded_labels
+        elif output_mode == relex:
+            # start by building a matrix that's N' x N' (word-piece length) with "None" as the default
+            # for word pairs, and -100 (mask) as the default if one of word pair is a suffix token
+            out_of_bounds = 0
+            num_relations = 0
+            for sent_ind, sent in enumerate(sentences):
+                word_ids = batch_encoding.word_ids(batch_index=sent_ind)
+                num_relations += len(labels[sent_ind])
+                wpi_to_tokeni = {}
+                tokeni_to_wpi = {}
+                sent_labels = np.zeros( (max_length, max_length)) - 100
+                wps = batch_encoding[sent_ind].tokens
+                sent_len = len(wps)
                 
-            for label in labels[sent_ind]:
-                if not label[0] in tokeni_to_wpi or not label[1] in tokeni_to_wpi:
-                    out_of_bounds +=1 
-                    continue
+                ## align word-piece tokens to the tokenization we got as input and only assign labels to input tokens
+                previous_word_idx = None
+                for word_pos_idx, word_idx in enumerate(word_ids):
+                    if word_idx != previous_word_idx or word_idx is None:
+                        key = word_pos_idx
+                        val = len(wpi_to_tokeni)
 
-                wpi1 = tokeni_to_wpi[label[0]]
-                wpi2 = tokeni_to_wpi[label[1]]
+                        wpi_to_tokeni[key] = val
+                        tokeni_to_wpi[val] = key
+                    previous_word_idx = word_idx
+                # make every label beween pairs a 0 to start:
+                for wpi in wpi_to_tokeni.keys():
+                    for wpi2 in wpi_to_tokeni.keys():
+                        # leave the diagonals at -100 because you can't have a relation with itself and we
+                        # don't want to consider it because it may screw up the learning to have 2 such similar
+                        # tokens not involved in a relation.
+                        if wpi != wpi2:
+                            sent_labels[wpi,wpi2] = 0.0
+                    
+                for label in labels[sent_ind]:
+                    if not label[0] in tokeni_to_wpi or not label[1] in tokeni_to_wpi:
+                        out_of_bounds +=1 
+                        continue
 
-                sent_labels[wpi1][wpi2] = label[2]
+                    wpi1 = tokeni_to_wpi[label[0]]
+                    wpi2 = tokeni_to_wpi[label[1]]
 
-            encoded_labels.append(sent_labels)
-        labels = encoded_labels
-        if out_of_bounds > 0:
-            logging.warn('During relation processing, there were %d relations (out of %d total relations) where at least one argument was truncated so the relation could not be trained/predicted.' % (out_of_bounds, num_relations) )
+                    sent_labels[wpi1][wpi2] = label[2]
+
+                encoded_labels.append(sent_labels)
+            labels = encoded_labels
+            if out_of_bounds > 0:
+                logging.warn('During relation processing, there were %d relations (out of %d total relations) where at least one argument was truncated so the relation could not be trained/predicted.' % (out_of_bounds, num_relations) )
 
     features = []
     for i in range(len(examples)):
@@ -208,8 +218,12 @@ def cnlp_convert_examples_to_features(
             inputs['event_tokens'] = [0] * event_start + [1] * (event_end-event_start+1) + [0] * (len(inputs['input_ids'])-event_end-1)
         else:
             inputs['event_tokens'] = [1] * len(inputs['input_ids'])
-           
-        feature = InputFeatures(**inputs, label=[labels[i]])
+        
+        if inference:
+            label = None
+        else:
+            label = [labels[i]]
+        feature = InputFeatures(**inputs, label=label)
         features.append(feature)
 
     for i, example in enumerate(examples[:5]):
@@ -336,6 +350,7 @@ class ClinicalNlpDataset(Dataset):
                         max_length=args.max_seq_length,
                         label_list=self.label_lists[task_ind],
                         output_mode=self.output_mode[task_ind],
+                        inference=mode == Split.test,
                     )
                     start = time.time()
                     torch.save(features, cached_features_file)
@@ -359,16 +374,19 @@ class ClinicalNlpDataset(Dataset):
                 if self.features is None:
                     self.features = features
                 else:
-                    # we should have all non-label features be the same, so we can essentially discard subsequent
-                    # datasets input features. So we'll append the labels from that features list and discard the duplicate input features.
                     assert len(features) == len(self.features)
-                    for feature_ind,feature in enumerate(features):
-                        if len(self.features[feature_ind].label[0].shape) == 1 and len(feature.label[0].shape) == 1:
-                            self.features[feature_ind].label[0] = np.stack([self.features[feature_ind].label[0],
-                                                                        feature.label[0]])
-                        else:
-                            self.features[feature_ind].label[0] = np.concatenate([self.features[feature_ind].label[0],
-                                                                        feature.label[0]])
+                    if self.features[0].label is None:
+                        assert features[0].label is None, 'Some of the tasks have None labels and others do not, they should be consistent!'
+                    else:
+                        # we should have all non-label features be the same, so we can essentially discard subsequent
+                        # datasets input features. So we'll append the labels from that features list and discard the duplicate input features.
+                        for feature_ind,feature in enumerate(features):
+                            if len(self.features[feature_ind].label[0].shape) == 1 and len(feature.label[0].shape) == 1:
+                                self.features[feature_ind].label[0] = np.stack([self.features[feature_ind].label[0],
+                                                                            feature.label[0]])
+                            else:
+                                self.features[feature_ind].label[0] = np.concatenate([self.features[feature_ind].label[0],
+                                                                            feature.label[0]])
 
     def __len__(self) -> int:
         return len(self.features)

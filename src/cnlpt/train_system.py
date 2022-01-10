@@ -44,12 +44,14 @@ from transformers.data.processors.utils import DataProcessor, InputExample, Inpu
 from transformers import ALL_PRETRAINED_CONFIG_ARCHIVE_MAP
 from transformers.optimization import AdamW, get_scheduler
 from transformers.trainer_pt_utils import get_parameter_names
+from transformers.file_utils import hf_bucket_url, CONFIG_NAME
 
 from .cnlp_processors import cnlp_processors, cnlp_output_modes, cnlp_compute_metrics, tagging, relex, classification
 from .cnlp_data import ClinicalNlpDataset, DataTrainingArguments
 
-from .CnlpRobertaForClassification import CnlpRobertaForClassification
+from .CnlpModelForClassification import CnlpModelForClassification
 from .BaselineModels import CnnSentenceClassifier, LstmSentenceClassifier
+import requests
 
 from transformers import (
     HfArgumentParser,
@@ -116,6 +118,19 @@ class ModelArguments:
         default=False, metadata={
             "help": "Whether to output the attentions of the model as well as the predictions."}
     )
+
+def is_pretrained_model(model_name):
+    # check if it's a built-in pre-trained config:
+    if model_name in ALL_PRETRAINED_CONFIG_ARCHIVE_MAP:
+        return True
+
+    # check if it's a model on the huggingface model hub:
+    url = hf_bucket_url(model_name, CONFIG_NAME)
+    r = requests.head(url)
+    if r.status_code == 200:
+        return True
+
+    return False
 
 
 def main(model_args, data_args, training_args):
@@ -209,9 +224,10 @@ def main(model_args, data_args, training_args):
     # download model & vocab.
 
     model_name = model_args.model_name_or_path
-    if not model_name in ALL_PRETRAINED_CONFIG_ARCHIVE_MAP and not model_name in baselines:
-        # we are loading one of our own trained models, load it as-is initially,
-        # then delete its classifier head, save as temp file, and make that temp file
+    if not is_pretrained_model(model_name) and not model_name in baselines:
+        # we are loading one of our own trained models as a starting point.
+        # we will load it as-is initially, then delete its classifier head, save the encoder
+        # as a temp file, and make that temp file
         # the model file to be loaded down below the normal way. since that temp file
         # doesn't have a stored classifier it will use the randomly-inited classifier head
         # with the size of the supplied config (for the new task)
@@ -220,17 +236,12 @@ def main(model_args, data_args, training_args):
             cache_dir=model_args.cache_dir,
             output_attentions=model_args.output_attentions,
         )
-        model = CnlpRobertaForClassification.from_pretrained(
-                model_args.model_name_or_path,
+        model = CnlpModelForClassification(
+                model_path = model_name,
                 config=config,
                 cache_dir=model_args.cache_dir,
-                layer=model_args.layer,
-                tokens=model_args.token,
-                freeze=model_args.freeze,
                 tagger=tagger,
                 relations=relations,
-                num_attention_heads=model_args.num_rel_feats,
-                head_size=model_args.head_features,
                 class_weights=None if train_dataset is None else train_dataset.class_weights,
                 final_task_weight=training_args.final_task_weight,
                 use_prior_tasks=model_args.use_prior_tasks,
@@ -255,25 +266,31 @@ def main(model_args, data_args, training_args):
             model_args.config_name if model_args.config_name else model_args.model_name_or_path,
             finetuning_task=data_args.task_name,
         )
+
+        if training_args.do_train:
+            # if we're training from a pre-trained model we need to add our arguments to the config.
+            # if we're doing eval/predict these arguments should already be part of the config and
+            # we don't want to overwrite them.
+            config.layer = model_args.layer
+            config.tokens = model_args.token
+            config.freeze = model_args.freeze
+            config.num_rel_attention_heads = model_args.num_rel_feats
+            config.rel_attention_head_dims = model_args.head_features
+
         pretrained = True
-        model = CnlpRobertaForClassification.from_pretrained(
-            model_name,
+        model = CnlpModelForClassification(
+            model_path=model_name,
             config=config,
             num_labels_list=num_labels,
             cache_dir=model_args.cache_dir,
-            layer=model_args.layer,
-            tokens=model_args.token,
-            freeze=model_args.freeze,
             tagger=tagger,
             relations=relations,
-            num_attention_heads=model_args.num_rel_feats,
-            head_size=model_args.head_features,
             class_weights=None if train_dataset is None else train_dataset.class_weights,
             final_task_weight=training_args.final_task_weight,
             use_prior_tasks=model_args.use_prior_tasks,
             argument_regularization=model_args.arg_reg)
         
-        model.resize_token_embeddings(len(tokenizer))
+        model.encoder.resize_token_embeddings(len(tokenizer))
 
     best_eval_results = None
     output_eval_file = os.path.join(

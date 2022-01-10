@@ -1,26 +1,15 @@
-from transformers.models.roberta.modeling_roberta import RobertaForSequenceClassification, RobertaModel, RobertaConfig, RobertaPreTrainedModel
+from transformers.models.auto import  AutoModel
+from transformers.modeling_utils import PreTrainedModel
+
 import torch
 from torch import nn
 import logging
-from torch.nn import CrossEntropyLoss
+from torch.nn import CrossEntropyLoss, MSELoss
 from transformers.modeling_outputs import SequenceClassifierOutput
 from torch.nn.functional import softmax, relu
 import math
 
 logger = logging.getLogger(__name__)
-
-_CONFIG_FOR_DOC = "RobertaConfig"
-_TOKENIZER_FOR_DOC = "RobertaTokenizer"
-
-ROBERTA_PRETRAINED_MODEL_ARCHIVE_LIST = [
-    "roberta-base",
-    "roberta-large",
-    "roberta-large-mnli",
-    "distilroberta-base",
-    "roberta-base-openai-detector",
-    "roberta-large-openai-detector",
-    # See all RoBERTa models at https://huggingface.co/models?filter=roberta
-]
 
 class ClassificationHead(nn.Module):
     def __init__(self, config, num_labels, hidden_size=-1):
@@ -101,18 +90,29 @@ class RepresentationProjectionLayer(nn.Module):
 
 
 
-class CnlpRobertaForClassification(RobertaPreTrainedModel):
-    config_class = RobertaConfig
-    base_model_prefix = "roberta"
+class CnlpModelForClassification(PreTrainedModel):
 
-    def __init__(self, config, num_labels_list=[], layer=10, freeze=False, tokens=False, tagger=False, relations=False, num_attention_heads=12, class_weights=None, final_task_weight=1.0, use_prior_tasks=False, argument_regularization=-1, head_size=64):
+    def __init__(self,
+                model_path,
+                cache_dir,
+                config,
+                num_labels_list=[],
+                tagger=[False],
+                relations=[False],
+                class_weights=None,
+                final_task_weight=1.0,
+                use_prior_tasks=False,
+                argument_regularization=-1,
+        ):
+
         super().__init__(config)
         self.num_labels = num_labels_list
 
-        self.roberta = RobertaModel(config)
+        model = AutoModel.from_config(config)
+        self.encoder = model.from_pretrained(model_path)
         
-        if freeze:
-            for param in self.roberta.parameters():
+        if config.freeze:
+            for param in self.encoder.parameters():
                 param.requires_grad = False
         
         self.feature_extractors = nn.ModuleList()
@@ -120,9 +120,9 @@ class CnlpRobertaForClassification(RobertaPreTrainedModel):
         self.classifiers = nn.ModuleList()
         total_prev_task_labels = 0
         for task_ind,task_num_labels in enumerate(num_labels_list):
-            self.feature_extractors.append(RepresentationProjectionLayer(config, layer=layer, tokens=tokens, tagger=tagger[task_ind], relations=relations[task_ind], num_attention_heads=num_attention_heads, head_size=head_size))
+            self.feature_extractors.append(RepresentationProjectionLayer(config, layer=config.layer, tokens=config.tokens, tagger=tagger[task_ind], relations=relations[task_ind], num_attention_heads=config.num_rel_attention_heads, head_size=config.rel_attention_head_dims))
             if relations[task_ind]:
-                hidden_size = num_attention_heads 
+                hidden_size = config.num_rel_attention_heads
                 if use_prior_tasks:
                     hidden_size += total_prev_task_labels
 
@@ -145,7 +145,7 @@ class CnlpRobertaForClassification(RobertaPreTrainedModel):
         self.argument_regularization = argument_regularization
         self.reg_temperature = 1.0
 
-        self.init_weights()
+        # self.init_weights()
 
     def predict_relations_with_previous_logits(self, features, logits):
         seq_len = features.shape[1]
@@ -189,7 +189,7 @@ class CnlpRobertaForClassification(RobertaPreTrainedModel):
             If :obj:`config.num_labels > 1` a classification loss is computed (Cross-Entropy).
         """
 
-        outputs = self.roberta(
+        outputs = self.encoder(
             input_ids,
             attention_mask=attention_mask,
             token_type_ids=token_type_ids,
