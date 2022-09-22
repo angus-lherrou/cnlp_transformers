@@ -91,6 +91,9 @@ class CnlpTrainingArguments(TrainingArguments):
     bias_fit: bool = field(
         default=False, metadata={"help": "Only optimize the bias parameters of the encoder (and the weights of the classifier heads), as proposed in the BitFit paper by Ben Zaken et al. 2021 (https://arxiv.org/abs/2106.10199)"}
     )
+    dapt_encoder: bool = field(
+        default=False, metadata={"help": "Perform domain-adaptive pretraining on the encoder before training (requires --dapt-data-dir)."}
+    )
 
 @dataclass
 class ModelArguments:
@@ -516,6 +519,15 @@ def main(json_file: Optional[str] = None, json_obj: Optional[Dict[str, Any]] = N
     output_eval_predictions = os.path.join(
         training_args.output_dir, f'eval_predictions.txt'
     )
+
+    if data_args.dapt_data_dir is not None and not training_args.dapt_encoder:
+        raise ValueError("--dapt-data-dir provided but --dapt-encoder not passed")
+    if training_args.dapt_encoder:
+        if 'encoder_name' not in locals():
+            raise ValueError("--dapt-encoder passed but model has no encoder")
+        if data_args.dapt_data_dir is None:
+            raise ValueError("--dapt-encoder passed but no --dapt-data-dir provided")
+        # TODO: domain-adaptive pretraining
 
     if training_args.do_train:
         # TODO: This assumes that if there are multiple training sets, they all have the same length, but

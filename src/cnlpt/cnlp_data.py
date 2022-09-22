@@ -256,7 +256,7 @@ def cnlp_preprocess_data(
     :param typing.Optional[int] max_length: the maximum sequence length
         at which to truncate examples
     :param List[str] tasks: the task name(s) in a list, used to index the labels in the examples list.
-    :param typing.Optional[typing.Dict[str,List[str]]] label_list: a mapping from 
+    :param typing.Optional[typing.Dict[str,List[str]]] label_list: a mapping from
         tasks to the list of labels for each task. If not provided explicitly, it will be retrieved from
         the processor with :meth:`transformers.DataProcessor.get_labels`.
     :param typing.Optional[Dict[str,str]] output_modes: the output modes for this task.
@@ -287,8 +287,8 @@ def cnlp_preprocess_data(
     elif 'text_b' in examples.keys():
         # FIXME - not sure if this is right but doesn't get used much in our data
         raise NotImplementedError("2-sentence classification has not been re-implemented yet.")
-        sentences = (examples['text_a'], examples['text_b'])        
-    
+        sentences = (examples['text_a'], examples['text_b'])
+
     if hierarchical:
         padding = False
     else:
@@ -302,7 +302,7 @@ def cnlp_preprocess_data(
         is_split_into_words=True,
     )
 
-    # Now that we have the labels for each instances, and we've tokenized the input sentences, 
+    # Now that we have the labels for each instances, and we've tokenized the input sentences,
     # we need to solve the problem of aligning labels with word piece indexes for the tasks of tagging
     # (which has one label per pre-wordpiece token) and relations (which are defined as tuples which
     # contain pre-wordpiece token indices)
@@ -349,7 +349,7 @@ def cnlp_preprocess_data(
     # else:
         # result['label'] =  [ (0,) for i in range(num_instances)]
 
-    result['event_mask'] = _build_event_mask(result, 
+    result['event_mask'] = _build_event_mask(result,
                                             num_instances,
                                             tokenizer.convert_tokens_to_ids('<e>'),
                                             tokenizer.convert_tokens_to_ids('</e>'))
@@ -430,11 +430,11 @@ def _build_pytorch_labels(result:BatchEncoding, tasks:List[str], labels:List, ou
                 for label in labels[sent_ind][task_ind]:
                     if label == "None":
                         continue
-                    
+
                     if not label[0] in tokeni_to_wpi or not label[1] in tokeni_to_wpi:
                         out_of_bounds +=1
                         continue
-                    
+
 
                     wpi1 = tokeni_to_wpi[label[0]]
                     wpi2 = tokeni_to_wpi[label[1]]
@@ -447,12 +447,12 @@ def _build_pytorch_labels(result:BatchEncoding, tasks:List[str], labels:List, ou
                 logging.warn(
                     'During relation processing, there were %d relations (out of %d total relations) where at least one argument was truncated so the relation could not be trained/predicted.' % (out_of_bounds, num_relations)
                 )
-                
+
         elif output_modes[task] == classification:
             for sent_ind in range(num_instances):
                 encoded_labels.append( (labels[sent_ind][task_ind],) )
             labels_out.append(np.array(encoded_labels))
-    
+
     labels_unshaped =  list(zip(*labels_out))
     labels_shaped = []
     for ind in range(len(labels_unshaped)):
@@ -460,7 +460,7 @@ def _build_pytorch_labels(result:BatchEncoding, tasks:List[str], labels:List, ou
             labels_shaped.append( np.concatenate( labels_unshaped[ind], axis=1 ) )
         elif labels_unshaped[ind][0].ndim == 1:
             labels_shaped.append( np.concatenate( labels_unshaped[ind], axis=0 ) )
-    
+
     return labels_shaped
 
 def _build_event_mask(result:BatchEncoding, num_insts:int, event_start_token_id, event_end_token_id):
@@ -543,6 +543,11 @@ class DataTrainingArguments:
         metadata={"help": "The input data dirs. A space-separated list of directories that "
                           "should contain the .tsv files (or other data files) for the task. "
                           "Should be presented in the same order as the task names."}
+    )
+
+    dapt_data_dir: Optional[str] = field(
+        default=None,
+        metadata={"help": "The data dir for domain-adaptive pretraining (requires --dapt-encoder)."}
     )
 
     task_name: List[str] = field(default_factory=lambda: None, metadata={
@@ -636,7 +641,7 @@ class ClinicalNlpDataset(Dataset):
         for data_dir_ind, data_dir in enumerate(args.data_dir):
             dataset_processor = AutoProcessor(data_dir, tasks, max_train_items=args.max_train_items)
             self.processors.append(dataset_processor)
-            
+
             ## TODO get this working again
             for classifier in range(dataset_processor.get_num_tasks()):
                 self.class_weights.append(None)
@@ -672,6 +677,7 @@ class ClinicalNlpDataset(Dataset):
             self.datasets.append(task_dataset)
             self.num_train_instances += task_dataset['train'].num_rows
 
+            # TODO: load domain-adaptive pretraining dataset
 
     def __len__(self) -> int:
         """
