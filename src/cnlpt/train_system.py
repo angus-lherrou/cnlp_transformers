@@ -26,6 +26,7 @@ from typing import Callable, Dict, Optional, List, Union, Any
 from filelock import FileLock
 import time
 import tempfile
+import typing
 import math
 
 from enum import Enum
@@ -49,7 +50,7 @@ from transformers.file_utils import CONFIG_NAME
 from huggingface_hub import hf_hub_url
 
 from .cnlp_processors import tagging, relex, classification
-from .cnlp_data import ClinicalNlpDataset, DataTrainingArguments
+from .cnlp_data import ClinicalNlpDataset, DataTrainingArguments, DaptDataset
 from .cnlp_metrics import cnlp_compute_metrics
 
 from .CnlpModelForClassification import CnlpModelForClassification, CnlpConfig
@@ -93,6 +94,9 @@ class CnlpTrainingArguments(TrainingArguments):
     )
     dapt_encoder: bool = field(
         default=False, metadata={"help": "Perform domain-adaptive pretraining on the encoder before training (requires --dapt-data-dir)."}
+    )
+    dapt_out_path: Optional[str] = field(
+        default=None, metadata={"help": "Path to write "}
     )
 
 @dataclass
@@ -323,6 +327,22 @@ def main(json_file: Optional[str] = None, json_obj: Optional[Dict[str, Any]] = N
     dataset = (
         ClinicalNlpDataset(data_args, tokenizer=tokenizer, cache_dir=model_args.cache_dir, hierarchical=hierarchical,)
     )
+
+    if training_args.dapt_encoder:
+        dapt_dataset = (
+            DaptDataset(data_args, tokenizer=tokenizer)
+        )
+
+        dapt_trainer = Trainer(
+            model=model_args.encoder_name,  # TODO
+            args=training_args,
+            train_dataset=dapt_dataset.train,
+            eval_dataset=dapt_dataset.test,
+            data_collator=dapt_dataset.data_collator,
+            tokenizer=tokenizer,
+        )
+
+        model_args.encoder_name = ___
 
     try:
         task_names = []
