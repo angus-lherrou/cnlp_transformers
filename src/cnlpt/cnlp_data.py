@@ -20,7 +20,6 @@ from dataclasses import dataclass, field, asdict, astuple
 from enum import Enum
 
 from .cnlp_processors import classification, tagging, relex, mtl, AutoProcessor
-from .dapt import DaptArguments
 
 special_tokens = ['<e>', '</e>', '<a1>', '</a1>', '<a2>', '</a2>', '<cr>', '<neg>']
 
@@ -730,7 +729,63 @@ def tokenize_fn(tokenizer, examples):
     return result
 
 
+@dataclass
+class DaptArguments:
+    encoder_name: Optional[str] = field(
+        default='roberta-base',
+        metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models"}
+    )
+    config_name: Optional[str] = field(
+        default=None, metadata={"help": "Pretrained config name or path if not the same as model_name"}
+    )
+    tokenizer_name: Optional[str] = field(
+        default=None, metadata={"help": "Pretrained tokenizer name or path if not the same as model_name"}
+    )
+    output_dir: Optional[str] = field(
+        default=None, metadata={"help": "Directory path to write trained model to."}
+    )
+    overwrite_output_dir: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "Overwrite the content of the output directory. "
+                "Use this to continue training if output_dir points to a checkpoint directory."
+            )
+        },
+    )
+    data_dir: Optional[str] = field(
+        default=None,
+        metadata={"help": "The data dir for domain-adaptive pretraining."}
+    )
+    cache_dir: Optional[str] = field(
+        default=None, metadata={"help": "Where do you want to store the pretrained models downloaded from s3"}
+    )
+    chunk_size: int = field(
+        default=128,
+        metadata={"help": "The chunk size for domain-adaptive pretraining."}
+    )
+    mlm_probability: float = field(
+        default=0.15,
+        metadata={"help": "The token masking probability for domain-adaptive pretraining."}
+    )
+    test_size: float = field(
+        default=0.2,
+        metadata={"help": "The test split proportion for domain-adaptive pretraining."}
+    )
+    seed: int = field(
+        default=42,
+        metadata={"help": "The random seed to use for a train/test split for domain-adaptive pretraining (requires --dapt-encoder)."}
+    )
+    no_eval: bool = field(
+        default=False,
+        metadata={"help": "Don't split into train and test; just pretrain."}
+    )
+
+
 class DaptDataset(Dataset):
+    def __getitem__(self, index):
+        return self.train[index]
+
     def __init__(
         self,
         args: DaptArguments,
@@ -740,7 +795,7 @@ class DaptDataset(Dataset):
         self.args = args
         self.tokenizer = tokenizer
 
-        dataset = load_dataset(self.args.data_dir).map(
+        dataset = load_dataset(self.args.data_dir, field='data').map(
             functools.partial(tokenize_fn, self.tokenizer),
             batched=True,
             remove_columns=["text", "label"],
@@ -749,7 +804,7 @@ class DaptDataset(Dataset):
             batched=True,
         )
 
-        if isinstance(dataset, (DatasetDict, IterableDatasetDict)):
+        if isinstance(dataset, (DatasetDict, IterableDatasetDict)) or args.no_eval:
             self.dataset = dataset
         else:
             self.dataset = dataset.train_test_split(
@@ -788,3 +843,4 @@ class DaptDataset(Dataset):
     #     :return: the example at index `i`
     #     """
     #     return self._dataset[i]
+

@@ -328,21 +328,21 @@ def main(json_file: Optional[str] = None, json_obj: Optional[Dict[str, Any]] = N
         ClinicalNlpDataset(data_args, tokenizer=tokenizer, cache_dir=model_args.cache_dir, hierarchical=hierarchical,)
     )
 
-    if training_args.dapt_encoder:
-        dapt_dataset = (
-            DaptDataset(data_args, tokenizer=tokenizer)
-        )
-
-        dapt_trainer = Trainer(
-            model=model_args.encoder_name,  # TODO
-            args=training_args,
-            train_dataset=dapt_dataset.train,
-            eval_dataset=dapt_dataset.test,
-            data_collator=dapt_dataset.data_collator,
-            tokenizer=tokenizer,
-        )
-
-        model_args.encoder_name = ___
+    # if training_args.dapt_encoder:
+    #     dapt_dataset = (
+    #         DaptDataset(data_args, tokenizer=tokenizer)
+    #     )
+    #
+    #     dapt_trainer = Trainer(
+    #         model=model_args.encoder_name,  # TODO
+    #         args=training_args,
+    #         train_dataset=dapt_dataset.train,
+    #         eval_dataset=dapt_dataset.test,
+    #         data_collator=dapt_dataset.data_collator,
+    #         tokenizer=tokenizer,
+    #     )
+    #
+    #     model_args.encoder_name = ___
 
     try:
         task_names = []
