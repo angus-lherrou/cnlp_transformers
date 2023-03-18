@@ -795,11 +795,19 @@ class DaptDataset(Dataset):
         self.args = args
         self.tokenizer = tokenizer
 
-        dataset = load_dataset(self.args.data_dir, field='data').map(
+        processor = AutoProcessor(self.args.data_dir, tasks=None)
+
+        # dataset = load_dataset(self.args.data_dir, field='data')
+        # remove_columns = ["text", "label"]
+        dataset = processor.dataset
+        remove_columns = ["text", "id", *processor.get_labels()]
+
+        dataset = dataset.map(
             functools.partial(tokenize_fn, self.tokenizer),
             batched=True,
-            remove_columns=["text", "label"],
-        ).map(
+            remove_columns=remove_columns,
+        )
+        dataset = dataset.map(
             functools.partial(group_texts, self.args.chunk_size),
             batched=True,
         )

@@ -158,7 +158,10 @@ class AutoProcessor(DataProcessor):
             ## and overwrite these.
             first_split = next(iter(self.dataset.values()))
             dataset_tasks = first_split.features.keys() - set(['text', 'text_a', 'text_b'])
-            active_tasks = tasks.intersection(dataset_tasks)
+            if tasks is None:
+                active_tasks = dataset_tasks
+            else:
+                active_tasks = tasks.intersection(dataset_tasks)
             active_tasks = list(active_tasks)
             active_tasks.sort()
             self.dataset.tasks = active_tasks

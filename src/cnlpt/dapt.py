@@ -3,8 +3,8 @@ import os
 import sys
 from typing import Optional, Dict, Any
 
-from transformers import Trainer, AutoTokenizer, AutoModel, set_seed, HfArgumentParser, \
-    TrainingArguments
+from transformers import Trainer, AutoTokenizer, AutoModelForMaskedLM, set_seed, \
+    HfArgumentParser, TrainingArguments
 
 from cnlpt.cnlp_data import DaptDataset, DaptArguments
 
@@ -82,10 +82,10 @@ def main(json_file: Optional[str] = None, json_obj: Optional[Dict[str, Any]] = N
         dapt_args.tokenizer_name if dapt_args.tokenizer_name else dapt_args.encoder_name,
         cache_dir=dapt_args.cache_dir,
         add_prefix_space=True,
-        additional_special_tokens=['<e>', '</e>', '<a1>', '</a1>', '<a2>', '</a2>', '<cr>', '<neg>']
+        # additional_special_tokens=['<e>', '</e>', '<a1>', '</a1>', '<a2>', '</a2>', '<cr>', '<neg>']
     )
 
-    model = AutoModel.from_pretrained(dapt_args.encoder_name)
+    model = AutoModelForMaskedLM.from_pretrained(dapt_args.encoder_name)
 
     dataset = (
         DaptDataset(dapt_args, tokenizer=tokenizer)
@@ -95,7 +95,7 @@ def main(json_file: Optional[str] = None, json_obj: Optional[Dict[str, Any]] = N
         model=model,
         args=TrainingArguments(output_dir=dapt_args.output_dir),
         train_dataset=dataset.train,
-        eval_dataset=dataset.test,
+        eval_dataset=dataset.test if not dapt_args.no_eval else None,
         data_collator=dataset.data_collator,
         tokenizer=tokenizer,
     )
@@ -103,6 +103,7 @@ def main(json_file: Optional[str] = None, json_obj: Optional[Dict[str, Any]] = N
     trainer.train()
 
     # write model out?
+    trainer.save_model()
 
 
 if __name__ == '__main__':
