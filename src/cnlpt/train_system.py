@@ -473,30 +473,56 @@ def main(json_file: Optional[str] = None, json_obj: Optional[Dict[str, Any]] = N
             # Load the cnlp configuration using AutoConfig, this will not override 
             # the arguments from trained cnlp models. While using CnlpConfig will override
             # the model_type and model_name of the encoder.
-            config = AutoConfig.from_pretrained(
-                model_args.config_name if model_args.config_name else model_args.encoder_name,
-                cache_dir=model_args.cache_dir,
-            )
+            encoder_config = AutoConfig.from_pretrained(model_args.encoder_name)            
+
+            if encoder_config.model_type == "cnlpt" and (model_args.config_name is None or model_args.config_name == model_args.encoder_name):
+                config = encoder_config
+            elif model_args.config_name is not None:
+                config = AutoConfig.from_pretrained(
+                    model_args.config_name,
+                    encoder_name=model_args.encoder_name,
+                )
+            else:
+                config = CnlpConfig(model_args.encoder_name,
+                                data_args.task_name,
+                                num_labels,
+                                layer=model_args.layer,
+                                tokens=model_args.token,
+                                num_rel_attention_heads=model_args.num_rel_feats,
+                                rel_attention_head_dims=model_args.head_features,
+                                tagger=tagger,
+                                relations=relations,)
+                                #num_tokens=len(tokenizer))
+            config.vocab_size = len(tokenizer)
+            
 
             if training_args.do_train:
                 # Setting 1) only load weights from the encoder
-                raise NotImplementedError('This functionality has not been restored yet')
                 model = CnlpModelForClassification(
-                        model_path = model_args.encoder_name,
                         config=config,
-                        cache_dir=model_args.cache_dir,
-                        tagger=tagger,
-                        relations=relations,
                         class_weights=dataset.class_weights,
                         final_task_weight=training_args.final_task_weight,
-                        use_prior_tasks=model_args.use_prior_tasks,
-                        argument_regularization=model_args.arg_reg)
-                delattr(model, 'classifiers')
-                delattr(model, 'feature_extractors')
-                if training_args.do_train:
-                    tempmodel = tempfile.NamedTemporaryFile(dir=model_args.cache_dir)
-                    torch.save(model.state_dict(), tempmodel)
-                    model_name = tempmodel.name
+                        freeze=training_args.freeze,
+                        bias_fit=training_args.bias_fit,
+                        argument_regularization=training_args.arg_reg,
+                )
+                # raise NotImplementedError('This functionality has not been restored yet')
+                # model = CnlpModelForClassification(
+                #         model_path = model_args.encoder_name,
+                #         config=config,
+                #         cache_dir=model_args.cache_dir,
+                #         tagger=tagger,
+                #         relations=relations,
+                #         class_weights=dataset.class_weights,
+                #         final_task_weight=training_args.final_task_weight,
+                #         use_prior_tasks=model_args.use_prior_tasks,
+                #         argument_regularization=model_args.arg_reg)
+                # delattr(model, 'classifiers')
+                # delattr(model, 'feature_extractors')
+                # if training_args.do_train:
+                #     tempmodel = tempfile.NamedTemporaryFile(dir=model_args.cache_dir)
+                #     torch.save(model.state_dict(), tempmodel)
+                #     model_name = tempmodel.name
             else:
                 # setting 2) evaluate or make predictions
                 model = CnlpModelForClassification.from_pretrained(
@@ -539,15 +565,6 @@ def main(json_file: Optional[str] = None, json_obj: Optional[Dict[str, Any]] = N
     output_eval_predictions = os.path.join(
         training_args.output_dir, f'eval_predictions.txt'
     )
-
-    if data_args.dapt_data_dir is not None and not training_args.dapt_encoder:
-        raise ValueError("--dapt-data-dir provided but --dapt-encoder not passed")
-    if training_args.dapt_encoder:
-        if 'encoder_name' not in locals():
-            raise ValueError("--dapt-encoder passed but model has no encoder")
-        if data_args.dapt_data_dir is None:
-            raise ValueError("--dapt-encoder passed but no --dapt-data-dir provided")
-        # TODO: domain-adaptive pretraining
 
     if training_args.do_train:
         # TODO: This assumes that if there are multiple training sets, they all have the same length, but
