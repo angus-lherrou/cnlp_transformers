@@ -800,7 +800,7 @@ class DaptDataset(Dataset):
         # dataset = load_dataset(self.args.data_dir, field='data')
         # remove_columns = ["text", "label"]
         dataset = processor.dataset
-        remove_columns = ["text", "id", *processor.get_labels()]
+        remove_columns = {"text", "id", *processor.get_labels()}.intersection(set(dataset.column_names["train"]))
 
         dataset = dataset.map(
             functools.partial(tokenize_fn, self.tokenizer),
