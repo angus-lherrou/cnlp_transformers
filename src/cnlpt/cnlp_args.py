@@ -25,6 +25,13 @@ class CnlpTrainingArguments(TrainingArguments):
     bias_fit: bool = field(
         default=False, metadata={"help": "Only optimize the bias parameters of the encoder (and the weights of the classifier heads), as proposed in the BitFit paper by Ben Zaken et al. 2021 (https://arxiv.org/abs/2106.10199)"}
     )
+    dapt_encoder: bool = field(
+        default=False, metadata={
+            "help": "Perform domain-adaptive pretraining on the encoder before training (requires --dapt-data-dir)."}
+    )
+    dapt_out_path: Optional[str] = field(
+        default=None, metadata={"help": "Path to write "}
+    )
     
 cnlpt_models = ['cnn', 'lstm', 'hier', 'cnlpt']
 
