@@ -11,12 +11,12 @@ from typing import Callable, Dict, Optional, List, Union, Tuple
 import numpy as np
 import torch
 from torch.utils.data.dataset import Dataset
-from transformers import BatchEncoding
+from transformers import BatchEncoding, InputExample
 from transformers import DataCollatorForLanguageModeling
-# from transformers.data.processors.utils import DataProcessor, InputExample
 from transformers.tokenization_utils import PreTrainedTokenizer
 from datasets import Features, load_dataset, DatasetDict, IterableDatasetDict, concatenate_datasets
 from dataclasses import dataclass, field, asdict, astuple
+import datasets
 from enum import Enum
 
 from .cnlp_processors import classification, tagging, relex, mtl, AutoProcessor
@@ -114,16 +114,15 @@ def cnlp_convert_features_to_hierarchical(
     Chunk an instance of InputFeatures into an instance of HierarchicalInputFeatures
     for the hierarchical model.
 
-    :param BatchEncoding features: the dictionary containing mappings from properties to lists of values for each instance for each of those properties
-    :param int chunk_len: the maximum length of a chunk
-    :param int num_chunks: the maximum number of chunks in the instance
-    :param int cls_id: the tokenizer's ID representing the CLS token
-    :param int sep_id: the tokenizer's ID representing the SEP token
-    :param int pad_id: the tokenizer's ID representing the PAD token
-    :param bool insert_empty_chunk_at_beginning: whether to insert an
+    :param features: the dictionary containing mappings from properties to lists of values for each instance for each of those properties
+    :param chunk_len: the maximum length of a chunk
+    :param num_chunks: the maximum number of chunks in the instance
+    :param cls_id: the tokenizer's ID representing the CLS token
+    :param sep_id: the tokenizer's ID representing the SEP token
+    :param pad_id: the tokenizer's ID representing the PAD token
+    :param insert_empty_chunk_at_beginning: whether to insert an
         empty chunk at the beginning of the instance
-    :rtype: HierarchicalInputFeatures
-    :return: an instance of `HierarchicalInputFeatures` containing the chunked instance
+    :return: an instance of :class:`transformers.BatchEncoding` containing the chunked instance
     """
 
     for ind in range(len(features['input_ids'])):
@@ -235,7 +234,7 @@ def cnlp_convert_features_to_hierarchical(
 
 
 def cnlp_preprocess_data(
-    examples,
+    examples: List[InputExample],
     tokenizer: PreTrainedTokenizer,
     max_length: Optional[int] = None,
     tasks: List[str] = None,
@@ -254,30 +253,29 @@ def cnlp_preprocess_data(
     and converts the examples into a list of :class:`InputFeatures` or
     :class:`HierarchicalInputFeatures`, depending on the model.
 
-    :param typing.List[transformers.data.processors.utils.InputExample] examples:
+    :param examples:
         the list of examples to convert
-    :param transformers.tokenization_utils.PreTrainedTokenizer tokenizer: the tokenizer
-    :param typing.Optional[int] max_length: the maximum sequence length
+    :param tokenizer: the tokenizer
+    :param max_length: the maximum sequence length
         at which to truncate examples
-    :param List[str] tasks: the task name(s) in a list, used to index the labels in the examples list.
-    :param typing.Optional[typing.Dict[str,List[str]]] label_list: a mapping from
+    :param tasks: the task name(s) in a list, used to index the labels in the examples list.
+    :param label_list: a mapping from
         tasks to the list of labels for each task. If not provided explicitly, it will be retrieved from
         the processor with :meth:`transformers.DataProcessor.get_labels`.
-    :param typing.Optional[Dict[str,str]] output_modes: the output modes for this task.
+    :param output_modes: the output modes for this task.
         If not provided explicitly, it will be retrieved from
         :data:`cnlpt.cnlp_processors.cnlp_output_modes`.
-    :param bool inference: whether we're doing training or inference only -- if inference mode the labels associated with examples can't be trusted.
-    :param bool hierarchical: whether to structure the data for the hierarchical
+    :param inference: whether we're doing training or inference only -- if inference mode the labels associated with examples can't be trusted.
+    :param hierarchical: whether to structure the data for the hierarchical
         model (:class:`cnlpt.HierarchicalTransformer.HierarchicalModel`)
-    :param int chunk_len: for the hierarchical model, the length of each
+    :param chunk_len: for the hierarchical model, the length of each
         chunk in tokens
-    :param int num_chunks: for the hierarchical model, the number of chunks
-    :param bool insert_empty_chunk_at_beginning: for the hierarchical model,
+    :param num_chunks: for the hierarchical model, the number of chunks
+    :param insert_empty_chunk_at_beginning: for the hierarchical model,
         whether to insert an empty chunk at the beginning of the list of chunks
         (equivalent in theory to a CLS chunk).
-    :param bool truncate_examples: whether to truncate the string representation
+    :param truncate_examples: whether to truncate the string representation
         of the example instances printed to the log
-    :rtype: typing.Union[typing.List[InputFeatures], typing.List[HierarchicalInputFeatures]]
     :return: the list of converted input features
     """
     
@@ -294,7 +292,7 @@ def cnlp_preprocess_data(
         sentences = (examples['text_a'], examples['text_b'])        
     else:
         raise Exception('The data does not seem to have a text column (literally a column labeled "text" is required)')
-
+    
     if hierarchical:
         padding = False
     else:
@@ -308,13 +306,13 @@ def cnlp_preprocess_data(
         is_split_into_words=True,
     )
 
-    # Now that we have the labels for each instances, and we've tokenized the input sentences,
+    # Now that we have the labels for each instances, and we've tokenized the input sentences, 
     # we need to solve the problem of aligning labels with word piece indexes for the tasks of tagging
     # (which has one label per pre-wordpiece token) and relations (which are defined as tuples which
     # contain pre-wordpiece token indices)
     if not inference:
         # Create a label map for each task in this dataset: { task1 => {label_0: 0, label_1: 1, label_2:, 2}, task2 => {label_0: 0, label_1:1} }
-        label_map = {task: {label: i for i, label in enumerate(label_lists[task])} for task in tasks}
+        label_map = {task: {label: i for i, label in enumerate(label_lists[task])} for task in label_lists.keys()}
         for task in tasks:
             if none_column in label_map[task]:
                 raise Exception("There is a column named %s which is a reserved name" % (none_column))
@@ -359,7 +357,7 @@ def cnlp_preprocess_data(
     # else:
         # result['label'] =  [ (0,) for i in range(num_instances)]
 
-    result['event_mask'] = _build_event_mask(result,
+    result['event_mask'] = _build_event_mask(result, 
                                             num_instances,
                                             tokenizer.convert_tokens_to_ids('<e>'),
                                             tokenizer.convert_tokens_to_ids('</e>'))
@@ -456,11 +454,11 @@ def _build_pytorch_labels(result:BatchEncoding, tasks:List[str], labels:List, ou
                 for label in labels[sent_ind][task_ind]:
                     if label == "None":
                         continue
-
+                    
                     if not label[0] in tokeni_to_wpi or not label[1] in tokeni_to_wpi:
                         out_of_bounds +=1
                         continue
-
+                    
 
                     wpi1 = tokeni_to_wpi[label[0]]
                     wpi2 = tokeni_to_wpi[label[1]]
@@ -473,7 +471,7 @@ def _build_pytorch_labels(result:BatchEncoding, tasks:List[str], labels:List, ou
                 logger.warn(
                     'During relation processing, there were %d relations (out of %d total relations) where at least one argument was truncated so the relation could not be trained/predicted.' % (out_of_bounds, num_relations)
                 )
-
+                
         elif output_modes[task] == classification:
             for inst_ind in range(num_instances):
                 # if we try to combine classification with tagging/relex, we end up with non-rectangular label
@@ -487,10 +485,10 @@ def _build_pytorch_labels(result:BatchEncoding, tasks:List[str], labels:List, ou
                 else:
                     encoded_labels.append(labels[inst_ind][task_ind])
             labels_out.append(np.array(encoded_labels))
-
+    
     labels_unshaped =  list(zip(*labels_out))
     labels_shaped = []
-
+    
     for ind in range(len(labels_unshaped)):
         if max_dims == 2:
             ## relations or tagging and possibly classification too
@@ -500,7 +498,7 @@ def _build_pytorch_labels(result:BatchEncoding, tasks:List[str], labels:List, ou
             labels_shaped.append( labels_unshaped[ind] )
         else:
             raise Exception('This should not be possible that max_dims > 2.')
-
+    
     return labels_shaped
 
 def _build_event_mask(result:BatchEncoding, num_insts:int, event_start_token_id, event_end_token_id):
@@ -527,13 +525,11 @@ def _build_event_mask(result:BatchEncoding, num_insts:int, event_start_token_id,
 
     return event_tokens
 
-def truncate_features(feature: Union[InputFeatures, HierarchicalInputFeatures]):
+def truncate_features(feature: Union[InputFeatures, HierarchicalInputFeatures]) -> str:
     """
     Method to produce a truncated string representation of a feature.
 
-    :param typing.Union[InputFeatures, HierarchicalInputFeatures] feature:
-        the feature to represent
-    :rtype: str
+    :param feature: the feature to represent
     :return: the truncated representation of the feature
     :meta private:
     """
@@ -635,13 +631,13 @@ class ClinicalNlpDataset(Dataset):
     Copy-pasted from GlueDataset with glue task-specific code changed;
     moved into here to be self-contained.
 
-    :param DataTrainingArguments args: the data training args for this experiment
-    :param transformers.tokenization_utils.PreTrainedTokenizer tokenizer: the tokenizer
-    :param typing.Optional[int] limit_length: if provided, the number of
+    :param args: the data training args for this experiment
+    :param tokenizer: the tokenizer
+    :param limit_length: if provided, the number of
         examples to include in the dataset
-    :param typing.Optional[str] cache_dir: if provided, the directory to save/load a cache
+    :param cache_dir: if provided, the directory to save/load a cache
         of this dataset
-    :param bool hierarchical: whether to structure the data for the hierarchical
+    :param hierarchical: whether to structure the data for the hierarchical
         model (:class:`cnlpt.HierarchicalTransformer.HierarchicalModel`)
     """
     args: DataTrainingArguments
@@ -673,8 +669,9 @@ class ClinicalNlpDataset(Dataset):
             if self.args.max_seq_length < implicit_max_len:
                 raise ValueError('For the hierarchical model, the max seq length should be equal to the chunk length * num_chunks, otherwise what is the point?')
 
+        # if cli supplies no tasks, the processor will assume we want all the tasks, but we do need to have a conventional order
+        # for the model to use, so we need to still create a tasks variable.
         tasks = None if args.task_name is None else list(args.task_name)
-        self.tasks = tasks
         for data_dir_ind, data_dir in enumerate(args.data_dir):
             dataset_processor = AutoProcessor(data_dir, tasks, max_train_items=args.max_train_items)
             self.processors.append(dataset_processor)
@@ -686,12 +683,25 @@ class ClinicalNlpDataset(Dataset):
             self.datasets.append(dataset_processor.dataset)
 
         ## Each processed dataset will have been pruned to remove columns that the user _didn't_ ask for,
-        ## but we need to add columns for tasks that it doesn't have that the user did ask for, with the
-        ## appropriate task types and  special values so pytorch knows not to compute losses over those
-        ## tasks for those inputs. Need to  do that after we've read all datasets and inferred all the task
+        ## but we need to add columns for tasks that it doesn't have that the user did ask for, with the 
+        ## appropriate task types and  special values so pytorch knows not to compute losses over those 
+        ## tasks for those inputs. Need to  do that after we've read all datasets and inferred all the task 
         ## types and label spaces.
         self._reconcile_columns()
         combined_dataset = self._concatenate_datasets()
+
+        if tasks is None:
+            # i.e., cli did not supply any task ordering:
+            if 'train' in combined_dataset:
+                split = 'train'
+            elif 'dev' in combined_dataset:
+                split = 'dev'
+            else:
+                split = 'test'
+
+            tasks = list(combined_dataset[split].features.keys() - {'text', 'text_a', 'text_b'})
+
+        self.tasks = tasks
 
         self.processed_dataset = combined_dataset.map(
             cnlp_preprocess_data,
@@ -733,16 +743,16 @@ class ClinicalNlpDataset(Dataset):
                 new_labels = set(labels)
                 old_labels = set(self.tasks_to_labels[task])
                 if new_labels.isdisjoint(old_labels):
-                    raise Exception("The same task name has disjoint sets of labels in different dataset: %s vs. %s" % (str(str(old_labels), str(new_labels))))
+                    raise Exception("The same task name has disjoint sets of labels in different dataset: %s vs. %s" % (str(old_labels), str(new_labels)))
                 elif new_labels != old_labels:
-                    logger.warn("Two different datasets have the same task name but not completely equal label lists: %s vs. %s. We will merge them." (str(old_labels), str(new_labels)))
+                    logger.warn("Two different datasets have the same task name but not completely equal label lists: %s vs. %s. We will merge them." % (str(old_labels), str(new_labels)))
                     self.tasks_to_labels[task] = old_labels.union(new_labels)
                 else:
                     ## they match completely, nothing to be done
                     pass
             else:
                 self.tasks_to_labels[task] = labels
-
+    
     def _reconcile_output_modes(self, processor):
         '''
         given a new data processor, which inferred output modes for its tasks, make
@@ -782,46 +792,43 @@ class ClinicalNlpDataset(Dataset):
                         dataset[split_name] = dataset[split_name].remove_columns(column)
 
     def _concatenate_datasets(self):
-        '''
+        """
         We have multiple dataset dicts, we need to create a single dataset dict
         where we concatenate each of the splits first.
-        '''
+        """
         datasets_by_split = {}
         for dataset in self.datasets:
             for split in dataset:
                 if split not in datasets_by_split:
                     datasets_by_split[split] = []
                 datasets_by_split[split].append(dataset[split])
-
+        
         for split_name, split_data in datasets_by_split.items():
-            datasets_by_split[split_name] = concatenate_datasets(split_data)
-
-        return DatasetDict(datasets_by_split)
+            datasets_by_split[split_name] = datasets.concatenate_datasets(split_data)
+        
+        return datasets.DatasetDict(datasets_by_split)
 
     def __len__(self) -> int:
         """
         Length method for this class.
 
-        :rtype: int
         :return: the number of datasets included in this dataset
         """
         return len(self.datasets)
 
-    def __getitem__(self, i):
+    def __getitem__(self, i) -> Union[InputFeatures, HierarchicalInputFeatures]:
         """
         Getitem method for this class.
 
         :param i: the index of the example to retrieve
-        :rtype: typing.Union[InputFeatures, HierarchicalInputFeatures]
         :return: the example at index `i`
         """
         return self.features[i]
 
-    def get_labels(self):
+    def get_labels(self) -> Dict[str, List[str]]:
         """
         Retrieve the label lists for all the tasks for the dataset.
 
-        :rtype: typing.Dict[str,typing.List[str]]
         :return: the dictionary of label lists indexed by task name
         """
         return self.tasks_to_labels

@@ -51,8 +51,21 @@ repository, please follow these steps.
    # ...or the SSH method
    $ git remote add fork git@github.com:{username}/cnlp_transformers.git
    ```
+3. Switch to the correct base branch:
+   * If you are not making changes to source files or project configuration
+     files (`setup.cfg`, `pyproject.toml`, `MANIFEST.in`), stay on `main`
+   * Otherwise, **switch to the branch for the next release**. 
+     * This will be a branch named `dev-vX.Y.Z` for version X.Y.Z.
+     * If there is no such branch, create it by branching off of `main`
+       and push it upstream to this repository:
+       ```sh
+       $ git switch -c dev-vX.Y.Z
+       $ git push --set-upstream origin dev-vX.Y.Z
+       ```
+       * You can also ask a maintainer to create this branch for you.
 
-3. Make a new branch and set your fork as the upstream remote:
+4. Make a new branch from the base branch selected above and set your 
+   fork as the upstream remote:
    > **Note:** see the section on testing below for information 
    > on how you may want to name your branch.
    ```sh
@@ -60,18 +73,19 @@ repository, please follow these steps.
    $ git push --set-upstream fork your-branch-name
    ```
 
-4. Open an issue that motivates the change you are making if there is
+5. Open an issue that motivates the change you are making if there is
    not one already.
 
-5. Make your changes in `your-branch-name` on your fork.
+6. Make your changes in `your-branch-name` on your fork.
 
-6. Open a PR to close the issue.
+7. Open a PR to close the issue.
    * If you are not making changes to source files or project configuration
      files (`setup.cfg`, `pyproject.toml`, `MANIFEST.in`), you can target `main`
    * Otherwise, **have your PR target the branch for the next release**. 
      * This will be a branch named `dev-vX.Y.Z` for version X.Y.Z.
      * If there is no such branch, create it by branching off of `main`, then
        target your new branch.
+       * You can also ask a maintainer to create this branch for you.
 
 ### Testing your code
 
@@ -96,7 +110,7 @@ AND the changes are in any of the following:
 You can see the structure of these test runs in the 
 [**Actions**](https://github.com/Machine-Learning-for-Medical-Language/cnlp_transformers/actions) 
 tab of this repository. In short, they will build and test the project
-on Python 3.7, 3.8, 3.9, and 3.10; these will always run at least on 
+on Python 3.8, 3.9, and 3.10; these will always run at least on 
 Linux, and in the case of commits or pull requests targeting `main`,
 they will run on Linux, macOS, and Windows.
 
@@ -137,6 +151,10 @@ in the initial development stage. For major version 0, both incompatible
 API changes and backwards compatible feature adds fall under the MINOR 
 version, and the API is not considered stable.
 
+When you have picked the appropriate version number and checked out
+the new branch, change the version number in `src/cnlpt/__init__.py:__version__` 
+to the new version number.
+
 ### Setting up your PyPI API key
 
 1. Log into your PyPI account
@@ -153,18 +171,31 @@ version, and the API is not considered stable.
 
 ### Building and uploading a new version
 
+Once development is finished on the new version of cnlp-transformers,
+it is time to merge the development branch and release the new version.
+
+1. Make sure the version number in `src/cnlpt/__init__.py:__version__`
+   has been incremented from the previous version on PyPI.
+2. Make sure all tests are passing for the latest commit in the development branch.
+3. Open a pull request for the development branch targeting `main`.
+4. Make sure all tests are passing for this pull request (this will run
+   test workflows for all supported platforms)
+5. Merge the pull request into `main` and proceed to step 6.
+
 **Only follow these steps after merging the new version branch into 
 `main`.**
 
-1. Checkout the merge commit for the new version; this will usually
+6. Checkout the merge commit for the new version; this will usually
    be the latest commit in `main`.
 
-2. Increment the version number in `src/cnlpt/__init__.py:__version__` from the 
-   previous version on PyPI.
+7. **Double check that the version number in `src/cnlpt/__init__.py:__version__`
+   has been incremented from the previous version on PyPI.**
+   * If it hasn't been, do so, commit it, and proceed with that commit
+     instead of the merge commit from the previous step.
 
-3. Delete the contents of the `./dist/` directory if it exists.
+8. Delete the contents of the `./dist/` directory if it exists.
 
-4. Build the package using `build`:
+9. Build the package using `build`:
    ```sh
    $ python -m build
    ```
@@ -172,35 +203,57 @@ version, and the API is not considered stable.
    This will build the package in the `./dist/` directory, creating it if
    it does not exist.
 
-5. Upload to PyPI with `twine`:
-   ```sh
-   $ python -m twine upload dist/*
-   ```
+10. Upload to PyPI with `twine`:
+    ```sh
+    $ python -m twine upload dist/*
+    ```
 
-6. On GitHub, make a new release:
-   1. Navigate to the [Releases](https://github.com/Machine-Learning-for-Medical-Language/cnlp_transformers/releases) page
-   2. Click "Draft a new release"
-   3. Click "Choose a tag"
-   4. Type the new version number in the format “vX.Y.Z” in the “Find or
-      create a new tag” field, and click “+ Create new tag: vX.Y.Z on publish”
-   5. Click “Generate release notes” and edit as necessary
-   6. Make sure “Set as latest release is checked”
-   7. Click "Publish"
+11. On GitHub, make a new release:
+    1. Navigate to the [Releases](https://github.com/Machine-Learning-for-Medical-Language/cnlp_transformers/releases) page
+    2. Click "Draft a new release"
+    3. Click "Choose a tag"
+    4. Type the new version number in the format “vX.Y.Z” in the “Find or
+       create a new tag” field, and click “+ Create new tag: vX.Y.Z on publish”
+    5. Click “Generate release notes” and edit as necessary
+    6. Make sure “Set as latest release” is checked
+    7. Click "Publish"
 
 ### Building the documentation
 
-To rebuild the autodoc toctrees and the `transformers` Intersphinx 
-mappings, run `build_doc_source.sh`.
+Here are some pointers for updating the Sphinx configuration. This is not exhaustive.
 
-To build the docs locally for testing documentation changes before 
-uploading to readthedocs, first **uncomment lines 36 and 65 on 
-`docs/conf.py`,** then execute the following:
+* Whenever a new class from a third party package (usually Transformers) is added
+  to a type annotation, a link will need to be added to the Intersphinx mappings.
+  For Transformers, you will have to add an entry for every namespace path you use
+  in the code; for instance, if you import `InputExample` from `transformers` and
+  from `transformers.data.processing.utils`, you will need two lines in `transformer_objects.txt` as follows:
+  
+  ```
+  transformers.InputExample py:class 1 main_classes/processors#$ -
+  transformers.data.processors.utils.InputExample py:class 1 main_classes/processors#transformers.InputExample -
+  ```
+  
+  The specification for the Intersphinx mappings can be found
+  [here](https://sphobjinv.readthedocs.io/en/stable/syntax.html).
 
-```sh
-$ cd docs
-$ make html
-```
+  To add mappings for other libraries, first check if an `objects.inv` file is
+  published for that project somewhere; then add it to `intersphinx_mappings` in `conf.py`
+  per the instructions
+  [here](https://www.sphinx-doc.org/en/master/usage/extensions/intersphinx.html#confval-intersphinx_mapping).
 
-This will write the docs to `docs/build/html`; simply open 
-`docs/build/html/index.html` in your browser of choice to view the 
-built documentation.
+* To rebuild the autodoc toctrees and the `transformers` Intersphinx 
+  mappings, run `build_doc_source.sh`.
+
+* ReadTheDocs should automatically begin building documentation for the latest
+  version upon the creation of the release in GitHub. To build the docs locally
+  for testing documentation changes before uploading to readthedocs, first
+  **uncomment lines 36 and 65 on `docs/conf.py`,** then execute the following:
+
+  ```sh
+  $ cd docs
+  $ make html
+  ```
+  
+  This will write the docs to `docs/build/html`; simply open 
+  `docs/build/html/index.html` in your browser of choice to view the 
+  built documentation.

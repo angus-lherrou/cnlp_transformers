@@ -4,14 +4,14 @@ Module containing the Hierarchical Transformer module, adapted from Xin Su.
 import logging
 import copy
 import random
-from typing import Optional, List, cast
+from typing import Optional, List, cast, Dict, Tuple
 
 import numpy as np
 from torch import nn
 import torch.nn.functional as F
 import torch
 from torch.nn import CrossEntropyLoss
-
+from dataclasses import dataclass
 from transformers.modeling_outputs import SequenceClassifierOutput
 from transformers.modeling_utils import PreTrainedModel
 from transformers import AutoModel, AutoConfig
@@ -35,6 +35,9 @@ def set_seed(seed, n_gpu):
     if n_gpu > 0:
         torch.cuda.manual_seed_all(seed)
 
+@dataclass
+class HierarchicalSequenceClassifierOutput(SequenceClassifierOutput):
+    chunk_attentions: Optional[Tuple[torch.FloatTensor]] = None
 
 class MultiHeadAttention(nn.Module):
     """
@@ -228,7 +231,19 @@ class HierarchicalModel(PreTrainedModel):
                 self.config.layer,
                 self.config.hier_head_config["n_layers"]
             ))
-        self.layer = self.config.layer
+        
+        if self.config.layer < 0:
+            self.layer = self.config.hier_head_config["n_layers"] + self.config.layer + 1
+            if self.layer < 0:
+                raise ValueError("The layer specified (%d) is a negative value which is larger than the actual number of layers %d" % (
+                    self.config.layer, 
+                    self.config.hier_head_config["n_layers"]
+                ))
+        else:
+            self.layer = self.config.layer
+
+        if self.layer == 0:
+            raise ValueError("The classifier layer derived is 0 which is ambiguous -- there is no usable 0th layer in a hierarchical model. Enter a value for the layer argument that at least 1 (use one layer) or -1 (use the final layer)")
 
         # This would seem to be redundant with the label list, which maps from tasks to labels,
         # but this version is ordered. This will allow the user to specify an order for any methods
@@ -261,12 +276,30 @@ class HierarchicalModel(PreTrainedModel):
             task_num_labels = len(task_labels)
             self.classifiers[task_name] = ClassificationHead(self.config, task_num_labels)
 
+        self.label_dictionary = config.label_dictionary
+        self.set_class_weights(class_weights)
+
+    def remove_task_classifiers(self, tasks=None):
+        if tasks is None:
+            self.classifiers = nn.ModuleDict()
+            self.tasks = []
+            self.class_weights = {}
+        else:
+            for task in tasks:
+                self.classifiers.pop(task)
+                self.tasks.remove(task)
+                self.class_weights.pop(task)
+
+    def add_task_classifier(self, task_name: str, label_dictionary: Dict[str, List]):
+        self.tasks.append(task_name)
+        self.classifiers[task_name] = ClassificationHead(self.config, len(label_dictionary))
+        self.label_dictionary[task_name] = label_dictionary
+
+    def set_class_weights(self, class_weights: Optional[List[float]] = None):
         if class_weights is None:
-            self.class_weights = {x: None for x in config.label_dictionary.keys()}
+            self.class_weights = {x: None for x in self.label_dictionary.keys()}
         else:
             self.class_weights = class_weights
-
-        self.label_dictionary = config.label_dictionary
 
     def forward(
         self,
@@ -361,10 +394,15 @@ class HierarchicalModel(PreTrainedModel):
             position_ids
         )
         chunks_reps = chunks_reps + position_embeddings
+        chunks_attns = None
 
         # document encoding (B, n_chunk, hidden_size)
         for layer_ind, layer_module in enumerate(self.transformer):
-            chunks_reps, _ = layer_module(chunks_reps)
+            chunks_reps, chunks_attn = layer_module(chunks_reps)
+            if output_attentions:
+                if chunks_attns is None:
+                    chunks_attns = []
+                chunks_attns.append(chunks_attn)
 
             ## this case is mainly for when we are doing subsequent fine-tuning using a pre-trained
             ## hierarchical model and we want to check whether an earlier layer might provide better
@@ -379,7 +417,7 @@ class HierarchicalModel(PreTrainedModel):
         # extract first Documents as rep. (B, hidden_size)
         doc_rep = chunks_reps[:, 0, :]
 
-        total_loss = 0
+        total_loss = None
         for task_ind, task_name in enumerate(self.tasks):
             if not self.class_weights[task_name] is None:
                 class_weights = torch.FloatTensor(self.class_weights[task_name]).to(self.device)
@@ -394,15 +432,19 @@ class HierarchicalModel(PreTrainedModel):
             if labels is not None:
                 task_labels = labels[:, task_ind]
                 task_loss = loss_fct(task_logits, task_labels.type(torch.LongTensor).to(labels.device))
-                total_loss += task_loss
+                if total_loss is None:
+                    total_loss = task_loss
+                else:
+                    total_loss += task_loss
 
 
         if self.training:
-            return SequenceClassifierOutput(
+            return HierarchicalSequenceClassifierOutput(
                 loss=total_loss,
                 logits=logits,
                 hidden_states=outputs.hidden_states,
                 attentions=outputs.attentions,
+                chunk_attentions=chunks_attns,
             )
         else:
-            return SequenceClassifierOutput(loss=total_loss, logits=logits, hidden_states=hidden_states)
+            return HierarchicalSequenceClassifierOutput(loss=total_loss, logits=logits, hidden_states=hidden_states, attentions=outputs.attentions, chunk_attentions=chunks_attns)

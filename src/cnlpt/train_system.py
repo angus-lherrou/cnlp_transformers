@@ -41,6 +41,8 @@ from torch.optim import AdamW
 from transformers.file_utils import CONFIG_NAME
 from huggingface_hub import hf_hub_url
 
+import sys
+sys.path.append(os.path.join(os.getcwd()))
 from .cnlp_processors import tagging, relex, classification
 from .cnlp_data import ClinicalNlpDataset, DataTrainingArguments, DaptDataset
 from .cnlp_metrics import cnlp_compute_metrics
@@ -57,32 +59,57 @@ from transformers import (
     Trainer,
     set_seed,
 )
+import json
+
+AutoConfig.register("cnlpt", CnlpConfig)
 
 logger = logging.getLogger(__name__)
 
 def is_hub_model(model_name):
     # check if it's a model on the huggingface model hub:
-    url = hf_hub_url(model_name, CONFIG_NAME)
-    r = requests.head(url)
-    if r.status_code == 200:
-        return True
+    try:
+        url = hf_hub_url(model_name, CONFIG_NAME)
+        r = requests.head(url)
+        if r.status_code == 200:
+            return True
+    except:
+        pass
 
     return False
 
-def main(json_file: Optional[str] = None, json_obj: Optional[Dict[str, Any]] = None):
+
+def is_cnlpt_model(model_path: str) -> bool:
+    """
+    Infer whether a model path refers to a cnlpt
+    model checkpoint (if not, we assume it is an
+    encoder)
+    :param model_path: the path to the model
+    :return: whether the model is a cnlpt classifier model
+    """
+    encoder_config = AutoConfig.from_pretrained(model_path)
+    return encoder_config.model_type == "cnlpt"
+
+
+def encoder_inferred(model_name_or_path: str) -> bool:
+    return is_hub_model(model_name_or_path) or not is_cnlpt_model(model_name_or_path)
+
+
+def main(
+    json_file: Optional[str] = None,
+    json_obj: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Dict[str, Any]]:
     """
     See all possible arguments in :class:`transformers.TrainingArguments`
     or by passing the --help flag to this script.
 
     We now keep distinct sets of args, for a cleaner separation of concerns.
 
-    :param typing.Optional[str] json_file: if passed, a path to a JSON file
+    :param json_file: if passed, a path to a JSON file
         to use as the model, data, and training arguments instead of
         retrieving them from the CLI (mutually exclusive with ``json_obj``)
-    :param typing.Optional[dict] json_obj: if passed, a JSON dictionary
+    :param json_obj: if passed, a JSON dictionary
         to use as the model, data, and training arguments instead of
         retrieving them from the CLI (mutually exclusive with ``json_file``)
-    :rtype: typing.Dict[str, typing.Dict[str, typing.Any]]
     :return: the evaluation results (will be empty if ``--do_eval`` not passed)
     """
     parser = HfArgumentParser((ModelArguments, DataTrainingArguments, CnlpTrainingArguments))
@@ -168,13 +195,12 @@ def main(json_file: Optional[str] = None, json_obj: Optional[Dict[str, Any]] = N
     #     model_args.encoder_name = ___
 
     try:
-        task_names = []
+        task_names = data_args.task_name
         num_labels = {}
         output_mode = {}
         tagger = {}
         relations = {}
         for task in dataset.tasks_to_labels.keys():
-            task_names.append(task)
             num_labels[task] = len(dataset.tasks_to_labels[task])
             task_output_mode = dataset.output_modes[task]
             output_mode[task] = task_output_mode
@@ -190,8 +216,9 @@ def main(json_file: Optional[str] = None, json_obj: Optional[Dict[str, Any]] = N
     # The .from_pretrained methods guarantee that only one local process can concurrently
     # download model & vocab.
     if model_name == 'cnn':
-        model = CnnSentenceClassifier(len(tokenizer), 
-                                      num_labels_list=num_labels,
+        model = CnnSentenceClassifier(len(tokenizer),
+                                      task_names=task_names,
+                                      num_labels_dict=num_labels,
                                       embed_dims=model_args.cnn_embed_dim,
                                       num_filters=model_args.cnn_num_filters,
                                       filters=model_args.cnn_filter_sizes,
@@ -202,7 +229,8 @@ def main(json_file: Optional[str] = None, json_obj: Optional[Dict[str, Any]] = N
             model.load_state_dict(torch.load(model_path))
     elif model_name == 'lstm':
         model = LstmSentenceClassifier(len(tokenizer),
-                                       num_labels_list=num_labels,
+                                       task_names=task_names,
+                                       num_labels_dict=num_labels,
                                        embed_dims=model_args.lstm_embed_dim,
                                        hidden_size=model_args.lstm_hidden_size,
                                        )
@@ -212,10 +240,10 @@ def main(json_file: Optional[str] = None, json_obj: Optional[Dict[str, Any]] = N
             model.load_state_dict(torch.load(model_path))
     elif model_name == 'hier':
         encoder_name = model_args.config_name if model_args.config_name else model_args.encoder_name
-        if is_hub_model(encoder_name):
+        if encoder_inferred(encoder_name):
             config = CnlpConfig(
-                encoder_name,
-                data_args.task_name,
+                encoder_name=encoder_name,
+                finetuning_task=data_args.task_name if data_args.task_name is not None else dataset.tasks,
                 layer=model_args.layer,
                 tokens=model_args.token,
                 num_rel_attention_heads=model_args.num_rel_feats,
@@ -242,32 +270,42 @@ def main(json_file: Optional[str] = None, json_obj: Optional[Dict[str, Any]] = N
             )
         else:
             # use a checkpoint from an existing model
-            AutoConfig.register("cnlpt", CnlpConfig)
             AutoModel.register(CnlpConfig, HierarchicalModel)
 
             config = AutoConfig.from_pretrained(
                     encoder_name,
                     cache_dir=model_args.cache_dir,
+                    layer=model_args.layer
                 )
+            config.finetuning_task = data_args.task_name
+            config.relations = relations
+            config.tagger = tagger
+            config.label_dictionary = {} # this gets filled in later
 
             ## TODO: check if user overwrote parameters in command line that could change behavior of the model and warn
             #if data_args.chunk_len is not None:
 
             logger.info("Loading pre-trained hierarchical model...")
             model = AutoModel.from_pretrained(encoder_name, config=config)
+
+            model.remove_task_classifiers()
+            for task in data_args.task_name:
+                model.add_task_classifier(task, dataset.get_labels()[task])
+            model.set_class_weights(dataset.class_weights)
+
     else:
         # by default cnlpt model, but need to check which encoder they want
         encoder_name = model_args.encoder_name
 
-        # TODO check when download any pretrained language model to local disk, if 
+        # TODO check when download any pretrained language model to local disk, if
         # the following condition "is_hub_model(encoder_name)" works or not.
-        if not is_hub_model(encoder_name):
+        if not encoder_inferred(encoder_name):
             # we are loading one of our own trained models as a starting point.
             #
             # 1) if training_args.do_train is true:
-            # sometimes we may want to use an encoder that has been had continued pre-training, either on
+            # sometimes we may want to use an encoder that has had continued pre-training, either on
             # in-domain MLM or another task we think might be useful. In that case our encoder will just
-            # be a link to a directory. If the encoder-name is not recognized as a pre-trianed model, special
+            # be a link to a directory. If the encoder-name is not recognized as a pre-trained model, special
             # logic for ad hoc encoders follows:
             # we will load it as-is initially, then delete its classifier head, save the encoder
             # as a temp file, and make that temp file
@@ -279,62 +317,36 @@ def main(json_file: Optional[str] = None, json_obj: Optional[Dict[str, Any]] = N
             # we evaluate or make predictions of our trained models. 
             # Both two setting require the registeration of CnlpConfig, and use 
             # AutoConfig.from_pretrained() to load the configuration file
-            AutoConfig.register("cnlpt", CnlpConfig)
             AutoModel.register(CnlpConfig, CnlpModelForClassification)
 
             
-            # Load the cnlp configuration using AutoConfig, this will not override 
+            # Load the cnlp configuration using AutoConfig, this will not override
             # the arguments from trained cnlp models. While using CnlpConfig will override
             # the model_type and model_name of the encoder.
-            encoder_config = AutoConfig.from_pretrained(model_args.encoder_name)
-
-            if encoder_config.model_type == "cnlpt" and (model_args.config_name is None or model_args.config_name == model_args.encoder_name):
-                config = encoder_config
-            elif model_args.config_name is not None:
-                config = AutoConfig.from_pretrained(
-                    model_args.config_name,
-                    encoder_name=model_args.encoder_name,
-                )
-            else:
-                config = CnlpConfig(model_args.encoder_name,
-                                data_args.task_name,
-                                num_labels,
-                                layer=model_args.layer,
-                                tokens=model_args.token,
-                                num_rel_attention_heads=model_args.num_rel_feats,
-                                rel_attention_head_dims=model_args.head_features,
-                                tagger=tagger,
-                                relations=relations,)
-                                #num_tokens=len(tokenizer))
-            config.vocab_size = len(tokenizer)
-
+            config = AutoConfig.from_pretrained(
+                model_args.config_name if model_args.config_name else model_args.encoder_name,
+                cache_dir=model_args.cache_dir,
+            )
 
             if training_args.do_train:
                 # Setting 1) only load weights from the encoder
+                raise NotImplementedError('This functionality has not been restored yet')
                 model = CnlpModelForClassification(
+                        model_path = model_args.encoder_name,
                         config=config,
+                        cache_dir=model_args.cache_dir,
+                        tagger=tagger,
+                        relations=relations,
                         class_weights=dataset.class_weights,
                         final_task_weight=training_args.final_task_weight,
-                        freeze=training_args.freeze,
-                        bias_fit=training_args.bias_fit,
-                )
-                # raise NotImplementedError('This functionality has not been restored yet')
-                # model = CnlpModelForClassification(
-                #         model_path = model_args.encoder_name,
-                #         config=config,
-                #         cache_dir=model_args.cache_dir,
-                #         tagger=tagger,
-                #         relations=relations,
-                #         class_weights=dataset.class_weights,
-                #         final_task_weight=training_args.final_task_weight,
-                #         use_prior_tasks=model_args.use_prior_tasks,
-                #         argument_regularization=model_args.arg_reg)
-                # delattr(model, 'classifiers')
-                # delattr(model, 'feature_extractors')
-                # if training_args.do_train:
-                #     tempmodel = tempfile.NamedTemporaryFile(dir=model_args.cache_dir)
-                #     torch.save(model.state_dict(), tempmodel)
-                #     model_name = tempmodel.name
+                        use_prior_tasks=model_args.use_prior_tasks,
+                        argument_regularization=model_args.arg_reg)
+                delattr(model, 'classifiers')
+                delattr(model, 'feature_extractors')
+                if training_args.do_train:
+                    tempmodel = tempfile.NamedTemporaryFile(dir=model_args.cache_dir)
+                    torch.save(model.state_dict(), tempmodel)
+                    model_name = tempmodel.name
             else:
                 # setting 2) evaluate or make predictions
                 model = CnlpModelForClassification.from_pretrained(
@@ -350,16 +362,18 @@ def main(json_file: Optional[str] = None, json_obj: Optional[Dict[str, Any]] = N
             # model card from https://huggingface.co/models
             # By default, we use model card as the starting point to fine-tune
             encoder_name = model_args.config_name if model_args.config_name else model_args.encoder_name
-            config = CnlpConfig(encoder_name,
-                                finetuning_task=data_args.task_name,
-                                layer=model_args.layer,
-                                tokens=model_args.token,
-                                num_rel_attention_heads=model_args.num_rel_feats,
-                                rel_attention_head_dims=model_args.head_features,
-                                tagger=tagger,
-                                relations=relations,
-                                label_dictionary=dataset.get_labels())
-                                #num_tokens=len(tokenizer))
+            config = CnlpConfig(
+                encoder_name=encoder_name,
+                finetuning_task=data_args.task_name,
+                layer=model_args.layer,
+                tokens=model_args.token,
+                num_rel_attention_heads=model_args.num_rel_feats,
+                rel_attention_head_dims=model_args.head_features,
+                tagger=tagger,
+                relations=relations,
+                label_dictionary=dataset.get_labels(),
+                #num_tokens=len(tokenizer),
+            )
             config.vocab_size = len(tokenizer)
             model = CnlpModelForClassification(
                 config=config,
@@ -397,7 +411,7 @@ def main(json_file: Optional[str] = None, json_obj: Optional[Dict[str, Any]] = N
             metrics = {}
             task_scores = []
             task_label_ind = 0
-
+            
             for task_ind,task_name in enumerate(task_names):
                 if tagger[task_name]:
                     preds = np.argmax(p.predictions[task_ind], axis=2)
@@ -420,8 +434,8 @@ def main(json_file: Optional[str] = None, json_obj: Optional[Dict[str, Any]] = N
                 elif p.label_ids.ndim == 2:
                     labels = p.label_ids[:,task_ind].squeeze()
 
-                metrics[task_name] = cnlp_compute_metrics(task_name, preds, labels,
-                                                          dataset.output_modes[task_name],
+                metrics[task_name] = cnlp_compute_metrics(task_name, preds, labels, 
+                                                          dataset.output_modes[task_name], 
                                                           dataset.tasks_to_labels[task_name])
                 # FIXME - Defaulting to accuracy for model selection score, when it should be task-specific
                 task_scores.append( metrics[task_name].get('one_score', np.mean(metrics[task_name].get('f1'))))
@@ -437,6 +451,9 @@ def main(json_file: Optional[str] = None, json_obj: Optional[Dict[str, Any]] = N
                         if training_args.do_train:
                             trainer.save_model()
                             tokenizer.save_pretrained(training_args.output_dir)
+                            if model_name == 'cnn' or model_name == 'lstm':
+                                with open(os.path.join(training_args.output_dir, 'config.json'), 'w') as f:
+                                    json.dump(model_args.to_dict(), f)
                         for task_ind,task_name in enumerate(metrics):
                             with open(output_eval_file, "w") as writer:
                                 # logger.info("***** Eval results for task %s *****" % (task_name))
@@ -451,6 +468,8 @@ def main(json_file: Optional[str] = None, json_obj: Optional[Dict[str, Any]] = N
         return compute_metrics_fn
 
     # Initialize our Trainer
+    training_args.load_best_model_at_end = True
+    training_args.metric_for_best_model='one_score'
     trainer = Trainer(
         model=model,
         args=training_args,
@@ -473,16 +492,23 @@ def main(json_file: Optional[str] = None, json_obj: Optional[Dict[str, Any]] = N
             if trainer.is_world_process_zero():
                 trainer.save_model()
                 tokenizer.save_pretrained(training_args.output_dir)
+                if model_name == 'cnn' or model_name == 'lstm':
+                    with open(os.path.join(training_args.output_dir, 'config.json'), 'w') as f:
+                        json.dump(model_args, f)
 
     # Evaluation
     eval_results = {}
     if training_args.do_eval:
         logger.info("*** Evaluate ***")
         eval_dataset=dataset.processed_dataset['validation']
-        try:
-            eval_result = model.best_eval_results
-        except:
+        # no evaluation was done prior to now, so we need to evaluate
+        if not hasattr(model, 'best_eval_results'):
             eval_result = trainer.evaluate(eval_dataset=eval_dataset)
+        else:
+            eval_result = model.best_eval_results
+
+        # if there is a stored model, restore it so writing outputs uses a good model
+
         
         trainer.compute_metrics = None
         if trainer.is_world_process_zero():
@@ -493,11 +519,20 @@ def main(json_file: Optional[str] = None, json_obj: Optional[Dict[str, Any]] = N
                     writer.write("%s = %s\n" % (key, value))
 
             # here we probably want separate predictions for each dataset:
-
+            if training_args.load_best_model_at_end:
+                model.load_state_dict(torch.load(join(training_args.output_dir, 'pytorch_model.bin')))  # load best model
+                trainer = Trainer(  # maake trainer from best model
+                    model=model,
+                    args=training_args,
+                    train_dataset=dataset.processed_dataset.get('train', None),
+                    eval_dataset=dataset.processed_dataset.get('validation', None),
+                    compute_metrics=build_compute_metrics_fn(task_names, model, dataset),
+                )
+                # use trainer to predict
             for dataset_ind,dataset_path in enumerate(data_args.data_dir):
                 subdir = os.path.split(dataset_path.rstrip('/'))[1]
                 output_eval_predictions_file = os.path.join(training_args.output_dir, f'eval_predictions_%s_%d.txt' % (subdir, dataset_ind))
-                write_predictions_for_dataset(output_eval_predictions_file,
+                write_predictions_for_dataset(output_eval_predictions_file, 
                                               trainer,
                                               dataset,
                                               'validation',
@@ -518,7 +553,7 @@ def main(json_file: Optional[str] = None, json_obj: Optional[Dict[str, Any]] = N
             for dataset_ind, dataset_path in enumerate(data_args.data_dir):
                 subdir = os.path.split(dataset_path.rstrip('/'))[1]
                 output_test_predictions_file = os.path.join(training_args.output_dir, f'test_predictions_%s_%d.txt' % (subdir, dataset_ind))
-                write_predictions_for_dataset(output_test_predictions_file,
+                write_predictions_for_dataset(output_test_predictions_file, 
                                                 trainer,
                                                 dataset,
                                                 'test',
